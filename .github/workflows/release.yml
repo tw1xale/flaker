@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Flaker
+        run: nix build
+
+      - name: Package Binary
+        run: |
+          mkdir -p dist
+          cp -L result/bin/flaker dist/flaker-x86_64-linux
+          chmod +x dist/flaker-x86_64-linux
+          tar -czf flaker-x86_64-linux.tar.gz -C dist flaker-x86_64-linux
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            flaker-x86_64-linux.tar.gz
+            dist/flaker-x86_64-linux
+          generate_release_notes: true

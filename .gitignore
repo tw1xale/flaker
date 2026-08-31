@@ -1,0 +1,22 @@
+# Build & dependency artifacts
+/target
+result
+result-*
+
+# Hidden files & directories (agent logs, IDE configs, OS files)
+.*
+!.gitignore
+!.github
+!.github/**
+
+# Prompts & local notes
+*prompt*.md
+skills-lock.json
+*.tmp
+*.log
+
+# Editor swap & backup files
+*.swp
+*.swo
+*~
+.DS_Store

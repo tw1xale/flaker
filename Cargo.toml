@@ -1,0 +1,22 @@
+[package]
+name = "flaker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Interactive TUI manager for NixOS Flakes"
+repository = "https://github.com/tw1xale/flaker"
+readme = "README.md"
+keywords = ["nixos", "nix", "tui", "ratatui", "catppuccin"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "flaker"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+tui-input = "0.10"
+whoami = "1"
+catppuccin = "2.8.0"
