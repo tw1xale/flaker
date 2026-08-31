@@ -40,7 +40,7 @@ Add Flaker to your `inputs`:
 
 {
   environment.systemPackages = [
-    inputs.flaker.packages.${pkgs.system}.default
+    inputs.flaker.packages.${pkgs.stdenv.hostPlatform.system}.default
   ];
 }
 ```
