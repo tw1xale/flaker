@@ -39,7 +39,7 @@ pub enum InputFlow {
     Rebuild,
     Lockfile,
     FullCycle,
-    SoftRevert,
+    SoftRevert(String),
     TrimHistory(String),
 }
 
@@ -121,7 +121,7 @@ pub enum ExternalTask {
     TestBuild,
     CleanStore,
     HardReset(String),
-    SoftRevertCommitAndSwitch(String),
+    SoftRevertCommitAndSwitch(String, String),
     TrimHistoryCommitAndPush(String, String),
 }
 
@@ -440,11 +440,9 @@ impl App {
 
     fn start_rebuild_system(&mut self) {
         if self.is_git {
-            let _ = git::git_add(&self.flake_dir, self.needs_sudo, ".");
-            let has_staged =
-                git::has_staged_changes(&self.flake_dir, self.needs_sudo).unwrap_or(false);
+            let has_changes = git::has_uncommitted_changes(&self.flake_dir).unwrap_or(false);
 
-            if has_staged {
+            if has_changes {
                 self.screen = Screen::InputModal(InputModalState {
                     action_name: "Rebuilding configuration".to_string(),
                     default_text: "rebuild".to_string(),
@@ -466,21 +464,13 @@ impl App {
 
     fn start_full_cycle(&mut self) {
         if self.is_git {
-            let _ = git::git_add(&self.flake_dir, self.needs_sudo, ".");
-            let has_staged =
-                git::has_staged_changes(&self.flake_dir, self.needs_sudo).unwrap_or(false);
-
-            if has_staged {
-                self.screen = Screen::InputModal(InputModalState {
-                    action_name: "Full update cycle".to_string(),
-                    default_text: "full update".to_string(),
-                    input: Input::default(),
-                    flow: InputFlow::FullCycle,
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
-                });
-            } else {
-                self.pending_external_task = ExternalTask::FullCycleSwitchOnly;
-            }
+            self.screen = Screen::InputModal(InputModalState {
+                action_name: "Full update cycle".to_string(),
+                default_text: "full update".to_string(),
+                input: Input::default(),
+                flow: InputFlow::FullCycle,
+                return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+            });
         } else {
             self.pending_external_task = ExternalTask::FullCycleSwitchOnly;
         }
@@ -532,7 +522,7 @@ impl App {
     }
 
     fn start_show_git_diff(&mut self) {
-        match git::get_diff(&self.flake_dir, self.needs_sudo) {
+        match git::get_diff(&self.flake_dir) {
             Ok(diff) if diff.trim().is_empty() => {
                 self.screen = Screen::Result(ResultState {
                     is_success: true,
@@ -562,7 +552,7 @@ impl App {
     }
 
     fn start_hard_reset_flow(&mut self) {
-        match git::get_recent_commits(&self.flake_dir, self.needs_sudo) {
+        match git::get_recent_commits(&self.flake_dir) {
             Ok(commits) if !commits.is_empty() => {
                 self.screen = Screen::CommitFilter(CommitFilterState {
                     header_title:
@@ -595,7 +585,7 @@ impl App {
     }
 
     fn start_soft_revert_flow(&mut self) {
-        match git::get_recent_commits(&self.flake_dir, self.needs_sudo) {
+        match git::get_recent_commits(&self.flake_dir) {
             Ok(commits) if !commits.is_empty() => {
                 self.screen = Screen::CommitFilter(CommitFilterState {
                     header_title:
@@ -628,7 +618,7 @@ impl App {
     }
 
     fn start_trim_history_flow(&mut self) {
-        match git::get_recent_commits(&self.flake_dir, self.needs_sudo) {
+        match git::get_recent_commits(&self.flake_dir) {
             Ok(commits) if !commits.is_empty() => {
                 self.screen = Screen::CommitFilter(CommitFilterState {
                     header_title:
@@ -757,8 +747,8 @@ impl App {
             InputFlow::FullCycle => {
                 self.pending_external_task = ExternalTask::FullCycleCommitAndSwitch(msg);
             }
-            InputFlow::SoftRevert => {
-                self.pending_external_task = ExternalTask::SoftRevertCommitAndSwitch(msg);
+            InputFlow::SoftRevert(hash) => {
+                self.pending_external_task = ExternalTask::SoftRevertCommitAndSwitch(hash, msg);
             }
             InputFlow::TrimHistory(hash) => {
                 self.pending_external_task = ExternalTask::TrimHistoryCommitAndPush(hash, msg);
@@ -878,24 +868,11 @@ impl App {
                 });
             }
             FilterFlow::SoftRevert => {
-                if let Err(err) =
-                    git::git_checkout_files(&self.flake_dir, self.needs_sudo, &selected_hash)
-                {
-                    self.screen = Screen::Result(ResultState {
-                        is_success: false,
-                        title: format!("FAILED TO CHECKOUT FILES FROM {selected_hash}"),
-                        message: err.to_string(),
-                        return_screen,
-                    });
-                    return;
-                }
-                let _ = git::git_add(&self.flake_dir, self.needs_sudo, ".");
-
                 self.screen = Screen::InputModal(InputModalState {
                     action_name: format!("Soft revert files to {selected_hash}"),
                     default_text: format!("revert to {selected_hash}"),
                     input: Input::default(),
-                    flow: InputFlow::SoftRevert,
+                    flow: InputFlow::SoftRevert(selected_hash),
                     return_screen,
                 });
             }

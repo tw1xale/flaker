@@ -114,11 +114,19 @@ fn execute_external_task(
         }
 
         ExternalTask::RebuildCommitAndSwitch(msg) => {
-            if is_git && let Err(err) = git::git_commit(&flake_dir, needs_sudo, &msg) {
+            let add_res = if is_git {
+                git::git_add(&flake_dir, needs_sudo, ".")
+            } else {
+                Ok(())
+            };
+
+            if add_res.is_err()
+                || (is_git && git::git_commit(&flake_dir, needs_sudo, &msg).is_err())
+            {
                 app.screen = Screen::Result(ResultState {
                     is_success: false,
                     title: "GIT COMMIT FAILED".to_string(),
-                    message: err.to_string(),
+                    message: "Failed to record git commit before rebuilding".to_string(),
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                 });
             } else {
@@ -159,8 +167,7 @@ fn execute_external_task(
             Ok(()) => {
                 if is_git {
                     let _ = git::git_add(&flake_dir, needs_sudo, "flake.lock");
-                    let has_staged =
-                        git::has_staged_changes(&flake_dir, needs_sudo).unwrap_or(false);
+                    let has_staged = git::has_staged_changes(&flake_dir).unwrap_or(false);
 
                     if has_staged {
                         app.screen = Screen::InputModal(crate::app::InputModalState {
@@ -388,39 +395,55 @@ fn execute_external_task(
             }
         }
 
-        ExternalTask::SoftRevertCommitAndSwitch(msg) => {
-            if let Err(err) = git::git_commit(&flake_dir, needs_sudo, &msg) {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT COMMIT FAILED".to_string(),
-                    message: err.to_string(),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
+        ExternalTask::SoftRevertCommitAndSwitch(hash, msg) => {
+            let r1 = git::git_checkout_files(&flake_dir, needs_sudo, &hash);
+            let r2 = if r1.is_ok() {
+                git::git_add(&flake_dir, needs_sudo, ".")
             } else {
-                let p_res = git::git_push(&flake_dir, needs_sudo, false);
-                let s_res = if p_res.is_ok() {
-                    nix::nixos_rebuild_switch(&flake_target, &flake_dir)
-                } else {
-                    p_res
-                };
+                r1
+            };
+            let r3 = if r2.is_ok() {
+                git::git_commit(&flake_dir, needs_sudo, &msg)
+            } else {
+                r2
+            };
 
-                match s_res {
-                    Err(err) => {
-                        app.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "SOFT REVERT FAILED".to_string(),
-                            message: err.to_string(),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                        });
-                    }
-                    Ok(()) => {
-                        app.screen = Screen::Result(ResultState {
-                            is_success: true,
-                            title: "SOFT REVERT SUCCESSFUL".to_string(),
-                            message: "Earlier state saved as a new commit and system rebuilt"
-                                .to_string(),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                        });
+            match r3 {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "SOFT REVERT FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+                Ok(()) => {
+                    let p_res = git::git_push(&flake_dir, needs_sudo, false);
+                    let s_res = if p_res.is_ok() {
+                        nix::nixos_rebuild_switch(&flake_target, &flake_dir)
+                    } else {
+                        p_res
+                    };
+
+                    match s_res {
+                        Err(err) => {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "REBUILD AFTER SOFT REVERT FAILED".to_string(),
+                                message: err.to_string(),
+                                return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                            });
+                        }
+                        Ok(()) => {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: true,
+                                title: "SOFT REVERT SUCCESSFUL".to_string(),
+                                message: format!(
+                                    "Earlier state from {hash} saved as new commit and system rebuilt"
+                                ),
+                                return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                            });
+                        }
                     }
                 }
             }

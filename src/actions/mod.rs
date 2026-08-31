@@ -295,23 +295,6 @@ pub fn run_visible(title: &str, command_desc: &str, cmd: &mut Command) -> Result
     Ok(status)
 }
 
-/// Runs a command and captures its output, temporarily suspending TUI so that any sudo password prompt works cleanly.
-/// Always prints the action header before running.
-pub fn run_captured(title: &str, command_desc: &str, cmd: &mut Command) -> Result<Output> {
-    let mut suspender = TerminalSuspender::suspend()?;
-
-    print_action_header_cli(title, command_desc);
-
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let output = cmd.output().context("Failed to capture command output")?;
-
-    suspender.resume();
-    Ok(output)
-}
-
 /// Runs a command silently without suspending the TUI or printing headers.
 /// Suitable for non-interactive read-only operations where sudo credentials are already cached.
 pub fn run_silent(cmd: &mut Command) -> Result<Output> {
