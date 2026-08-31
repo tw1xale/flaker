@@ -1,10 +1,10 @@
-use crate::actions::{make_cmd, run_captured, run_visible};
+use crate::actions::{make_cmd, run_silent, run_visible};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Reads the current active NixOS system generation number.
+/// Reads the current active NixOS system generation number (read-only, no sudo).
 pub fn get_system_generation() -> String {
     if let Ok(target) = fs::read_link("/nix/var/nix/profiles/system")
         && let Some(name) = target.file_name().and_then(|n| n.to_str())
@@ -57,18 +57,13 @@ pub fn nixos_rebuild_build(flake_target: &str, dir: &Path) -> Result<()> {
     }
 }
 
-/// Fetches the output of nixos-rebuild list-generations.
+/// Fetches the output of nixos-rebuild list-generations (read-only, no sudo).
 pub fn nixos_list_generations(dir: &Path) -> Result<String> {
-    let mut cmd = Command::new("sudo");
-    cmd.args(["nixos-rebuild", "list-generations"])
-        .current_dir(dir);
+    let mut cmd = Command::new("nixos-rebuild");
+    cmd.args(["list-generations"]).current_dir(dir);
 
-    let output = run_captured(
-        "FETCHING SYSTEM GENERATIONS",
-        "sudo nixos-rebuild list-generations",
-        &mut cmd,
-    )
-    .context("Failed to execute nixos-rebuild list-generations")?;
+    let output =
+        run_silent(&mut cmd).context("Failed to execute nixos-rebuild list-generations")?;
 
     if !output.status.success() {
         anyhow::bail!(

@@ -1,6 +1,7 @@
 use crate::actions::{make_cmd, run_silent, run_visible};
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::process::Command;
 
 /// Adds files to the git staging area.
 pub fn git_add(dir: &Path, needs_sudo: bool, path: &str) -> Result<()> {
@@ -22,15 +23,25 @@ pub fn git_add(dir: &Path, needs_sudo: bool, path: &str) -> Result<()> {
     }
 }
 
-/// Checks if there are staged changes ready to be committed.
-pub fn has_staged_changes(dir: &Path, needs_sudo: bool) -> Result<bool> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["diff", "--cached", "--quiet"]);
+/// Checks if there are staged changes ready to be committed (read-only, no sudo).
+pub fn has_staged_changes(dir: &Path) -> Result<bool> {
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--cached", "--quiet"]).current_dir(dir);
 
     let output = run_silent(&mut cmd).context("Failed to check staged git diff")?;
 
     // exit code 0 means no diff, exit code 1 means differences exist
     Ok(!output.status.success())
+}
+
+/// Checks if there are any uncommitted changes in the repository (read-only, no sudo).
+pub fn has_uncommitted_changes(dir: &Path) -> Result<bool> {
+    let mut cmd = Command::new("git");
+    cmd.args(["status", "--porcelain"]).current_dir(dir);
+
+    let output = run_silent(&mut cmd).context("Failed to check git status")?;
+    let out_str = String::from_utf8_lossy(&output.stdout);
+    Ok(!out_str.trim().is_empty())
 }
 
 /// Commits staged changes with the provided message.
@@ -53,10 +64,10 @@ pub fn git_commit(dir: &Path, needs_sudo: bool, message: &str) -> Result<()> {
     }
 }
 
-/// Retrieves the current git branch name, falling back to "master".
-pub fn get_current_branch(dir: &Path, needs_sudo: bool) -> String {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["branch", "--show-current"]);
+/// Retrieves the current git branch name, falling back to "master" (read-only, no sudo).
+pub fn get_current_branch(dir: &Path) -> String {
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", "--show-current"]).current_dir(dir);
 
     if let Ok(out) = run_silent(&mut cmd) {
         let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -70,7 +81,7 @@ pub fn get_current_branch(dir: &Path, needs_sudo: bool) -> String {
 
 /// Pushes commits to the remote repository.
 pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
-    let branch = get_current_branch(dir, needs_sudo);
+    let branch = get_current_branch(dir);
 
     let mut args = vec!["push"];
     if force {
@@ -119,10 +130,11 @@ pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
     }
 }
 
-/// Fetches all commits from history for selection, with aligned columns.
-pub fn get_recent_commits(dir: &Path, needs_sudo: bool) -> Result<Vec<String>> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["log", "--format=%h%x1f%cr%x1f%s"]);
+/// Fetches all commits from history for selection, with aligned columns (read-only, no sudo).
+pub fn get_recent_commits(dir: &Path) -> Result<Vec<String>> {
+    let mut cmd = Command::new("git");
+    cmd.args(["log", "--format=%h%x1f%cr%x1f%s"])
+        .current_dir(dir);
 
     let output = run_silent(&mut cmd).context("Failed to execute git log")?;
 
@@ -165,14 +177,14 @@ pub fn get_recent_commits(dir: &Path, needs_sudo: bool) -> Result<Vec<String>> {
     Ok(commits)
 }
 
-/// Retrieves working directory and staged diffs.
-pub fn get_diff(dir: &Path, needs_sudo: bool) -> Result<String> {
-    let mut unstaged_cmd = make_cmd("git", dir, needs_sudo);
-    unstaged_cmd.args(["diff"]);
+/// Retrieves working directory and staged diffs (read-only, no sudo).
+pub fn get_diff(dir: &Path) -> Result<String> {
+    let mut unstaged_cmd = Command::new("git");
+    unstaged_cmd.args(["diff"]).current_dir(dir);
     let unstaged = run_silent(&mut unstaged_cmd).context("Failed to execute git diff")?;
 
-    let mut staged_cmd = make_cmd("git", dir, needs_sudo);
-    staged_cmd.args(["diff", "--cached"]);
+    let mut staged_cmd = Command::new("git");
+    staged_cmd.args(["diff", "--cached"]).current_dir(dir);
     let staged = run_silent(&mut staged_cmd).context("Failed to execute git diff --cached")?;
 
     let mut combined = String::new();
