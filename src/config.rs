@@ -286,27 +286,18 @@ impl KeybindingsConfig {
         format!("[{up_s}/{down_s}] Navigate")
     }
 
-    pub fn menu_hint(&self, count: usize, is_top_menu: bool) -> String {
+    pub fn menu_hint(&self, count: usize) -> String {
         let nav = self.nav_hint();
         let sel = format_keys_display(&self.select);
-        let back_lbl = if is_top_menu { "Exit" } else { "Back" };
-        let back_hint = if !self.back_item_key.trim().is_empty() {
-            format!("[{}] {back_lbl}", self.back_item_key.trim())
-        } else {
-            format!("[{}] {back_lbl}", format_keys_display(&self.back))
-        };
-
         let action_count = count.saturating_sub(1);
         if self.enable_quick_digits && action_count > 0 {
             if action_count == 1 {
-                format!("[1] Select  •  {back_hint}  •  {nav}  •  [{sel}] Select")
+                format!("[1] Quick select  •  {nav}  •  [{sel}] Select")
             } else {
-                format!(
-                    "[1-{action_count}] Quick select  •  {back_hint}  •  {nav}  •  [{sel}] Select"
-                )
+                format!("[1-{action_count}] Quick select  •  {nav}  •  [{sel}] Select")
             }
         } else {
-            format!("{back_hint}  •  {nav}  •  [{sel}] Select")
+            format!("{nav}  •  [{sel}] Select")
         }
     }
 
@@ -645,12 +636,12 @@ mod tests {
 
         assert_eq!(kb.nav_hint(), "[w/s] Navigate");
         assert_eq!(
-            kb.menu_hint(4, true),
-            "[1-3] Quick select  •  [q] Exit  •  [w/s] Navigate  •  [Space] Select"
+            kb.menu_hint(4),
+            "[1-3] Quick select  •  [w/s] Navigate  •  [Space] Select"
         );
         assert_eq!(
-            kb.menu_hint(5, false),
-            "[1-4] Quick select  •  [q] Back  •  [w/s] Navigate  •  [Space] Select"
+            kb.menu_hint(5),
+            "[1-4] Quick select  •  [w/s] Navigate  •  [Space] Select"
         );
         assert_eq!(
             kb.confirm_hint(),
