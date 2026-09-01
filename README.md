@@ -146,16 +146,48 @@ FLAKER_DIR="/home/username/dotfiles" flaker
 
 ---
 
-## ⌨️ Custom Keybindings & Configuration
+## ⌨️ Custom Configuration (`config.toml`)
 
-Flaker automatically creates a configuration file at `~/.config/flaker/config.toml` (or `~/.config/flaker.toml`) on first launch with default keybindings.
+Flaker automatically creates a configuration file at `~/.config/flaker/config.toml` (or `~/.config/flaker.toml`) on first launch with sensible defaults.
 
-You can customize your preferred keys (including Vim keys, arrows, letters, and control combinations):
+You can customize custom flake paths, color palettes, auto-commit message templates, and keybindings:
 
 ```toml
 # ~/.config/flaker/config.toml
 
+[general]
+# Explicit flake directory path (leave empty for automatic detection)
+# Examples: "/etc/nixos", "~/dotfiles/nixos", "~/my-config"
+flake_dir = ""
+
+# Explicit flake target (leave empty for automatic detection)
+# Examples: "/etc/nixos#hostname", "~/dotfiles#my-user"
+flake_target = ""
+
+[theme]
+# Color palette. Available options:
+# "mocha" (default dark), "macchiato", "frappe", "latte" (light),
+# "nord", "tokyonight", "dracula", "gruvbox"
+palette = "mocha"
+
+# Optional custom color overrides (HEX format like "#89b4fa"):
+# border = "#89b4fa"
+# accent = "#cba6f7"
+# selected = "#f9e2af"
+# header_title = "#89dceb"
+
+[commit_templates]
+# Default commit messages for actions
+rebuild = "rebuild"
+flake_update = "flake update"
+full_cycle = "full update"
+soft_revert = "revert to {hash}"
+trim_history = "trim history to {hash}"
+
 [keybindings]
+# Enable instant single-digit selection (1, 2, 3...) for menu items
+enable_quick_digits = true
+
 # Navigation keys
 up = ["Up", "k"]
 down = ["Down", "j"]

@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::theme::Theme;
 use crate::ui::header::centered_rect;
 use ratatui::{
     Frame,
@@ -18,12 +18,12 @@ pub struct ConfirmParams<'a> {
     pub hint: &'a str,
 }
 
-/// Renders a confirmation dialog.
-pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams) {
+/// Renders a confirmation dialog with themed colors.
+pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, theme: &Theme) {
     let border_color: Color = if params.is_danger {
-        theme::DANGER
+        theme.danger
     } else {
-        theme::WARNING
+        theme.warning
     };
 
     let popup_width = 68.min(area.width.saturating_sub(4));
@@ -68,7 +68,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams) {
         .map(|line| {
             Line::from(vec![Span::styled(
                 *line,
-                Style::default().fg(theme::MUTED_TEXT),
+                Style::default().fg(theme.muted_text),
             )])
         })
         .collect();
@@ -81,20 +81,20 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams) {
     // Buttons
     let aff_style = if params.selected_button == 0 {
         Style::default()
-            .fg(theme::TEXT)
+            .fg(theme.text)
             .bg(border_color)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme::MUTED_TEXT)
+        Style::default().fg(theme.muted_text)
     };
 
     let neg_style = if params.selected_button == 1 {
         Style::default()
-            .fg(theme::TEXT)
-            .bg(theme::BORDER)
+            .fg(theme.text)
+            .bg(theme.border)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme::MUTED_TEXT)
+        Style::default().fg(theme.muted_text)
     };
 
     let buttons_line = Line::from(vec![
@@ -111,7 +111,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams) {
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
         params.hint,
-        Style::default().fg(theme::FAINT_HINT),
+        Style::default().fg(theme.faint_hint),
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });

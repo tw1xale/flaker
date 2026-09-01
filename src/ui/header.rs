@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::theme::{self, Theme};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
-/// Renders the main top-level menu header.
+/// Renders the main top-level menu header with themed colors.
 pub fn render_header(
     frame: &mut Frame,
     area: Rect,
@@ -15,40 +15,41 @@ pub fn render_header(
     user: &str,
     generation: &str,
     flake_target: &str,
+    theme: &Theme,
 ) {
     let title_line = Line::from(vec![
         Span::styled(
             theme::ICON_SNOWFLAKE,
-            Style::default().fg(theme::HEADER_TITLE),
+            Style::default().fg(theme.header_title),
         ),
         Span::raw("    "),
         Span::styled(
             "F L A K E R",
             Style::default()
-                .fg(theme::HEADER_TITLE)
+                .fg(theme.header_title)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("    "),
         Span::styled(
             theme::ICON_SNOWFLAKE,
-            Style::default().fg(theme::HEADER_TITLE),
+            Style::default().fg(theme.header_title),
         ),
     ]);
 
     let meta_line = Line::from(vec![Span::styled(
         format!("Host: {host}  •  User: {user}  •  Generation: #{generation}"),
-        Style::default().fg(theme::MUTED_TEXT),
+        Style::default().fg(theme.muted_text),
     )]);
 
     let target_line = Line::from(vec![Span::styled(
         format!("Target: {flake_target}"),
-        Style::default().fg(theme::SECONDARY_INFO),
+        Style::default().fg(theme.secondary_info),
     )]);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::BORDER));
+        .border_style(Style::default().fg(theme.border));
 
     let paragraph = Paragraph::new(vec![
         Line::from(""),

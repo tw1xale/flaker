@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::time::Duration;
 
+use crate::config::Config;
+
 /// Context and configuration of the active NixOS Flake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlakeContext {
@@ -168,37 +170,56 @@ pub fn resolve_target_for_dir(dir: &Path) -> String {
     format!("{dir_str}#{fallback}")
 }
 
-/// Auto-detects the active NixOS flake target and environment context.
-pub fn detect_flake_context() -> FlakeContext {
-    // 1. Explicit override via environment variable
-    if let Ok(val) = std::env::var("FLAKER_TARGET").or_else(|_| std::env::var("FLAKE_TARGET")) {
-        let trimmed = val.trim();
-        if !trimmed.is_empty() {
-            let (dir_part, _target_name) = if let Some(idx) = trimmed.find('#') {
-                (&trimmed[..idx], &trimmed[idx + 1..])
+/// Auto-detects the active NixOS flake target and environment context, incorporating Config overrides.
+pub fn detect_flake_context(config: &Config) -> FlakeContext {
+    // 1. Explicit override via environment variable or config.general.flake_target
+    let target_override = std::env::var("FLAKER_TARGET")
+        .or_else(|_| std::env::var("FLAKE_TARGET"))
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            if !config.general.flake_target.trim().is_empty() {
+                Some(config.general.flake_target.trim().to_string())
             } else {
-                (trimmed, "")
-            };
+                None
+            }
+        });
 
-            let dir = if dir_part.is_empty() || dir_part == "." {
-                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-            } else {
-                PathBuf::from(dir_part)
-            };
+    if let Some(target_str) = target_override {
+        let (dir_part, _target_name) = if let Some(idx) = target_str.find('#') {
+            (&target_str[..idx], &target_str[idx + 1..])
+        } else {
+            (target_str.as_str(), "")
+        };
 
-            let is_git = is_git_repo(&dir);
-            let needs_sudo = check_needs_sudo(&dir);
+        let dir = if dir_part.is_empty() || dir_part == "." {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            PathBuf::from(dir_part)
+        };
 
-            return FlakeContext {
-                flake_dir: dir,
-                flake_target: trimmed.to_string(),
-                is_git,
-                needs_sudo,
-            };
-        }
+        let is_git = is_git_repo(&dir);
+        let needs_sudo = check_needs_sudo(&dir);
+
+        return FlakeContext {
+            flake_dir: dir,
+            flake_target: target_str,
+            is_git,
+            needs_sudo,
+        };
     }
 
-    let dir = discover_flake_dir();
+    // 2. Explicit directory override via environment variable or config.general.flake_dir
+    let dir = if let Ok(val) = std::env::var("FLAKER_DIR").or_else(|_| std::env::var("FLAKE_DIR"))
+        && !val.trim().is_empty()
+    {
+        PathBuf::from(val.trim())
+    } else if !config.general.flake_dir.trim().is_empty() {
+        PathBuf::from(config.general.flake_dir.trim())
+    } else {
+        discover_flake_dir()
+    };
+
     let is_git = is_git_repo(&dir);
     let needs_sudo = check_needs_sudo(&dir);
     let flake_target = resolve_target_for_dir(&dir);
