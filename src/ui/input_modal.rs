@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::theme::{self, Theme};
 use crate::ui::header::centered_rect;
 use ratatui::{
     Frame,
@@ -9,7 +9,7 @@ use ratatui::{
 };
 use tui_input::Input;
 
-/// Renders the commit message input modal with dynamic keybinding hint.
+/// Renders the commit message input modal with dynamic keybinding hint and themed colors.
 pub fn render_input_modal(
     frame: &mut Frame,
     area: Rect,
@@ -17,6 +17,7 @@ pub fn render_input_modal(
     input: &Input,
     default_text: &str,
     hint: &str,
+    theme: &Theme,
 ) {
     let popup_width = 68.min(area.width.saturating_sub(4));
     let popup_height = 11.min(area.height.saturating_sub(2));
@@ -27,7 +28,7 @@ pub fn render_input_modal(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::BORDER));
+        .border_style(Style::default().fg(theme.border));
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -45,7 +46,7 @@ pub fn render_input_modal(
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
         format!("{}  COMMIT TO REPOSITORY", theme::ICON_COMMIT),
         Style::default()
-            .fg(theme::HEADER_TITLE)
+            .fg(theme.header_title)
             .add_modifier(Modifier::BOLD),
     )]))
     .alignment(Alignment::Center)
@@ -55,7 +56,7 @@ pub fn render_input_modal(
     // Action name
     let action_p = Paragraph::new(Line::from(vec![Span::styled(
         format!("Action: {action_name}"),
-        Style::default().fg(theme::MUTED_TEXT),
+        Style::default().fg(theme.muted_text),
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
@@ -64,7 +65,7 @@ pub fn render_input_modal(
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
         hint,
-        Style::default().fg(theme::FAINT_HINT),
+        Style::default().fg(theme.faint_hint),
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
@@ -72,9 +73,9 @@ pub fn render_input_modal(
 
     // Input box
     let display_text = if input.value().is_empty() {
-        Span::styled(default_text, Style::default().fg(theme::FAINT_HINT))
+        Span::styled(default_text, Style::default().fg(theme.faint_hint))
     } else {
-        Span::styled(input.value(), Style::default().fg(theme::TEXT))
+        Span::styled(input.value(), Style::default().fg(theme.text))
     };
 
     let input_line = Line::from(vec![Span::raw(" "), display_text]);
@@ -82,7 +83,7 @@ pub fn render_input_modal(
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::BORDER));
+        .border_style(Style::default().fg(theme.border));
 
     let input_p = Paragraph::new(input_line).block(input_block);
     frame.render_widget(input_p, chunks[4]);

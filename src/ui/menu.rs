@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::theme::{self, Theme};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem},
 };
 
-/// Renders a selectable menu list with optional digit prefixes and solid rounded borders.
+/// Renders a selectable menu list with optional digit prefixes and themed colors.
 pub fn render_menu(
     frame: &mut Frame,
     area: Rect,
@@ -15,6 +15,7 @@ pub fn render_menu(
     items: &[&str],
     selected_index: usize,
     show_numbers: bool,
+    theme: &Theme,
 ) {
     let list_items: Vec<ListItem> = items
         .iter()
@@ -23,10 +24,10 @@ pub fn render_menu(
             let is_selected = i == selected_index;
             let item_style = if is_selected {
                 Style::default()
-                    .fg(theme::SELECTED)
+                    .fg(theme.selected)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme::TEXT)
+                Style::default().fg(theme.text)
             };
 
             let mut spans = vec![Span::raw(" ")];
@@ -34,10 +35,10 @@ pub fn render_menu(
             if show_numbers {
                 let num_style = if is_selected {
                     Style::default()
-                        .fg(theme::SELECTED)
+                        .fg(theme.selected)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(theme::SECONDARY_INFO)
+                    Style::default().fg(theme.secondary_info)
                 };
                 spans.push(Span::styled(format!("{}. ", i + 1), num_style));
             }
@@ -53,12 +54,12 @@ pub fn render_menu(
         .title(Span::styled(
             format!("  {} {header_title}  ", theme::ICON_BOLT),
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::BORDER));
+        .border_style(Style::default().fg(theme.border));
 
     let list = List::new(list_items).block(block);
 

@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::theme::Theme;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
-/// Renders a scrollable text pager for diffs or generation history with dynamic keybinding hint.
+/// Renders a scrollable text pager for diffs or generation history with dynamic keybinding hint and themed colors.
 pub fn render_pager(
     frame: &mut Frame,
     area: Rect,
@@ -15,6 +15,7 @@ pub fn render_pager(
     content_lines: &[String],
     scroll_offset: usize,
     footer_hint: &str,
+    theme: &Theme,
 ) {
     let popup_area = Rect {
         x: area.x + 1,
@@ -29,12 +30,12 @@ pub fn render_pager(
         .title(Span::styled(
             format!("  {title}  "),
             Style::default()
-                .fg(theme::HEADER_TITLE)
+                .fg(theme.header_title)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::BORDER));
+        .border_style(Style::default().fg(theme.border));
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -52,19 +53,19 @@ pub fn render_pager(
         .take(visible_height)
         .map(|raw_line| {
             let style = if raw_line.starts_with('+') && !raw_line.starts_with("+++") {
-                Style::default().fg(theme::SUCCESS)
+                Style::default().fg(theme.success)
             } else if raw_line.starts_with('-') && !raw_line.starts_with("---") {
-                Style::default().fg(theme::DANGER)
+                Style::default().fg(theme.danger)
             } else if raw_line.starts_with("@@") {
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else if raw_line.starts_with("diff --git") || raw_line.starts_with("index ") {
                 Style::default()
-                    .fg(theme::SECONDARY_INFO)
+                    .fg(theme.secondary_info)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme::TEXT)
+                Style::default().fg(theme.text)
             };
 
             Line::from(vec![Span::styled(raw_line.as_str(), style)])
@@ -76,7 +77,7 @@ pub fn render_pager(
 
     let footer_p = Paragraph::new(Line::from(vec![Span::styled(
         footer_hint,
-        Style::default().fg(theme::FAINT_HINT),
+        Style::default().fg(theme.faint_hint),
     )]))
     .alignment(Alignment::Right);
     frame.render_widget(footer_p, chunks[1]);

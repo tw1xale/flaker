@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::theme::{self, Theme};
 use crate::ui::header::centered_rect;
 use ratatui::{
     Frame,
@@ -9,16 +9,16 @@ use ratatui::{
 };
 use tui_input::Input;
 
-/// Renders the commit selection fuzzy filter modal with dynamic keybinding hint.
-pub fn render_filter(
-    frame: &mut Frame,
-    area: Rect,
-    header_title: &str,
-    input: &Input,
-    filtered_items: &[(&str, Vec<usize>)], // (commit_line, matched_char_indices)
-    selected_index: usize,
-    hint: &str,
-) {
+pub struct FilterParams<'a> {
+    pub header_title: &'a str,
+    pub input: &'a Input,
+    pub filtered_items: &'a [(&'a str, Vec<usize>)],
+    pub selected_index: usize,
+    pub hint: &'a str,
+}
+
+/// Renders the commit selection fuzzy filter modal with dynamic keybinding hint and themed colors.
+pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme: &Theme) {
     let popup_width = 76.min(area.width.saturating_sub(4));
     let popup_height = 23.min(area.height.saturating_sub(2));
     let popup_area = centered_rect(popup_width, popup_height, area);
@@ -28,7 +28,7 @@ pub fn render_filter(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::WARNING));
+        .border_style(Style::default().fg(theme.warning));
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -47,7 +47,7 @@ pub fn render_filter(
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
         format!("{}  SELECT COMMIT", theme::ICON_HISTORY),
         Style::default()
-            .fg(theme::WARNING)
+            .fg(theme.warning)
             .add_modifier(Modifier::BOLD),
     )]))
     .alignment(Alignment::Center)
@@ -56,8 +56,8 @@ pub fn render_filter(
 
     // Subtitle
     let subtitle_p = Paragraph::new(Line::from(vec![Span::styled(
-        header_title,
-        Style::default().fg(theme::NEUTRAL_TEXT),
+        params.header_title,
+        Style::default().fg(theme.neutral_text),
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
@@ -65,8 +65,8 @@ pub fn render_filter(
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
-        hint,
-        Style::default().fg(theme::FAINT_HINT),
+        params.hint,
+        Style::default().fg(theme.faint_hint),
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
@@ -84,21 +84,21 @@ pub fn render_filter(
     let prefix_width = 1 + 1 + 9; // " " + glyph (1) + " Search: " (9) = 11
 
     let search_line = Line::from(vec![
-        Span::styled(prefix_text, Style::default().fg(theme::BORDER)),
-        if input.value().is_empty() {
+        Span::styled(prefix_text, Style::default().fg(theme.border)),
+        if params.input.value().is_empty() {
             Span::styled(
                 "Filter by hash, date, or message...",
-                Style::default().fg(theme::FAINT_HINT),
+                Style::default().fg(theme.faint_hint),
             )
         } else {
-            Span::styled(input.value(), Style::default().fg(theme::TEXT))
+            Span::styled(params.input.value(), Style::default().fg(theme.text))
         },
     ]);
 
     let search_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::BORDER));
+        .border_style(Style::default().fg(theme.border));
 
     let search_p = Paragraph::new(search_line).block(search_block);
     frame.render_widget(search_p, search_area);
@@ -106,22 +106,23 @@ pub fn render_filter(
     // Commits list
     let list_area = chunks[5];
     let max_visible = list_area.height as usize;
-    let scroll_offset = if selected_index >= max_visible {
-        selected_index - max_visible + 1
+    let scroll_offset = if params.selected_index >= max_visible {
+        params.selected_index - max_visible + 1
     } else {
         0
     };
 
     let max_col_width = list_area.width.saturating_sub(2) as usize;
 
-    let list_items: Vec<ListItem> = filtered_items
+    let list_items: Vec<ListItem> = params
+        .filtered_items
         .iter()
         .skip(scroll_offset)
         .take(max_visible)
         .enumerate()
         .map(|(visible_idx, (commit_str, matches))| {
             let actual_idx = visible_idx + scroll_offset;
-            let is_selected = actual_idx == selected_index;
+            let is_selected = actual_idx == params.selected_index;
 
             let mut spans = vec![Span::raw(" ")];
 
@@ -137,21 +138,21 @@ pub fn render_filter(
                 let is_match = matches.contains(&char_idx);
                 let style = if is_match {
                     Style::default()
-                        .fg(theme::HEADER_TITLE)
+                        .fg(theme.header_title)
                         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
                 } else if is_selected {
                     Style::default()
-                        .fg(theme::SELECTED)
+                        .fg(theme.selected)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(theme::TEXT)
+                    Style::default().fg(theme.text)
                 };
 
                 spans.push(Span::styled(ch.to_string(), style));
             }
 
             if truncated {
-                spans.push(Span::styled("…", Style::default().fg(theme::FAINT_HINT)));
+                spans.push(Span::styled("…", Style::default().fg(theme.faint_hint)));
             }
 
             ListItem::new(Line::from(spans))
@@ -163,7 +164,7 @@ pub fn render_filter(
 
     // Set cursor on search query according to input.visual_cursor()
     let start_x = search_area.x + 1 + prefix_width;
-    let cursor_x = start_x + input.visual_cursor() as u16;
+    let cursor_x = start_x + params.input.visual_cursor() as u16;
     let cursor_y = search_area.y + 1;
     if cursor_x < search_area.x + search_area.width.saturating_sub(1) {
         frame.set_cursor_position((cursor_x, cursor_y));

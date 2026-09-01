@@ -11,10 +11,10 @@ use tui_input::backend::crossterm::EventHandler;
 
 use crate::actions::{detect_flake_context, git, nix};
 use crate::config::{Config, load_config};
-use crate::theme;
+use crate::theme::{self, Theme};
 use crate::ui::{
     confirm::{ConfirmParams, render_confirm},
-    filter::render_filter,
+    filter::{FilterParams, render_filter},
     header::{centered_rect, render_header},
     input_modal::render_input_modal,
     menu::render_menu,
@@ -140,6 +140,7 @@ pub struct App {
     pub is_git: bool,
     pub needs_sudo: bool,
     pub config: Config,
+    pub theme: Theme,
     pub pending_external_task: ExternalTask,
 }
 
@@ -154,8 +155,9 @@ impl App {
         let host = whoami::fallible::hostname().unwrap_or_else(|_| "nixos".to_string());
         let user = whoami::fallible::username().unwrap_or_else(|_| "user".to_string());
         let generation = nix::get_system_generation();
-        let ctx = detect_flake_context();
         let config = load_config();
+        let theme = Theme::from_config(&config.theme);
+        let ctx = detect_flake_context(&config);
 
         Self {
             should_quit: false,
@@ -170,13 +172,14 @@ impl App {
             is_git: ctx.is_git,
             needs_sudo: ctx.needs_sudo,
             config,
+            theme,
             pending_external_task: ExternalTask::None,
         }
     }
 
     pub fn refresh_metadata(&mut self) {
         self.generation = nix::get_system_generation();
-        let ctx = detect_flake_context();
+        let ctx = detect_flake_context(&self.config);
         self.flake_dir = ctx.flake_dir;
         self.flake_target = ctx.flake_target;
         self.is_git = ctx.is_git;
@@ -205,6 +208,7 @@ impl App {
                     &self.user,
                     &self.generation,
                     &self.flake_target,
+                    &self.theme,
                 );
 
                 let item0 = format!("{}  Updates", theme::ICON_REBUILD);
@@ -229,12 +233,13 @@ impl App {
                     &items,
                     self.top_menu_index,
                     self.config.keybindings.enable_quick_digits,
+                    &self.theme,
                 );
 
                 let hint = self.config.keybindings.menu_hint(items.len());
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
-                    .style(Style::default().fg(theme::FAINT_HINT));
+                    .style(Style::default().fg(self.theme.faint_hint));
                 frame.render_widget(hint_p, chunks[4]);
             }
 
@@ -295,12 +300,13 @@ impl App {
                     &item_refs,
                     self.submenu_index,
                     self.config.keybindings.enable_quick_digits,
+                    &self.theme,
                 );
 
                 let hint = self.config.keybindings.menu_hint(items.len());
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
-                    .style(Style::default().fg(theme::FAINT_HINT));
+                    .style(Style::default().fg(self.theme.faint_hint));
                 frame.render_widget(hint_p, chunks[2]);
             }
 
@@ -316,7 +322,7 @@ impl App {
                     is_danger: state.is_danger,
                     hint: &hint,
                 };
-                render_confirm(frame, area, &params);
+                render_confirm(frame, area, &params, &self.theme);
             }
 
             Screen::InputModal(state) => {
@@ -328,6 +334,7 @@ impl App {
                     &state.input,
                     &state.default_text,
                     &hint,
+                    &self.theme,
                 );
             }
 
@@ -338,16 +345,15 @@ impl App {
                     .map(|(s, indices)| (s.as_str(), indices.clone()))
                     .collect();
                 let hint = self.config.keybindings.filter_hint();
+                let params = FilterParams {
+                    header_title: &state.header_title,
+                    input: &state.input,
+                    filtered_items: &filtered_refs,
+                    selected_index: state.selected_index,
+                    hint: &hint,
+                };
 
-                render_filter(
-                    frame,
-                    area,
-                    &state.header_title,
-                    &state.input,
-                    &filtered_refs,
-                    state.selected_index,
-                    &hint,
-                );
+                render_filter(frame, area, &params, &self.theme);
             }
 
             Screen::Pager(state) => {
@@ -362,6 +368,7 @@ impl App {
                     &state.lines,
                     state.scroll_offset,
                     &hint,
+                    &self.theme,
                 );
             }
 
@@ -374,6 +381,7 @@ impl App {
                     &state.title,
                     &state.message,
                     &hint,
+                    &self.theme,
                 );
             }
         }
@@ -518,9 +526,10 @@ impl App {
             let has_changes = git::has_uncommitted_changes(&self.flake_dir).unwrap_or(false);
 
             if has_changes {
+                let default_text = self.config.commit_templates.rebuild.clone();
                 self.screen = Screen::InputModal(InputModalState {
                     action_name: "Rebuilding configuration".to_string(),
-                    default_text: "rebuild".to_string(),
+                    default_text,
                     input: Input::default(),
                     flow: InputFlow::Rebuild,
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
@@ -539,9 +548,10 @@ impl App {
 
     fn start_full_cycle(&mut self) {
         if self.is_git {
+            let default_text = self.config.commit_templates.full_cycle.clone();
             self.screen = Screen::InputModal(InputModalState {
                 action_name: "Full update cycle".to_string(),
-                default_text: "full update".to_string(),
+                default_text,
                 input: Input::default(),
                 flow: InputFlow::FullCycle,
                 return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
@@ -760,9 +770,14 @@ impl App {
                 self.pending_external_task = ExternalTask::HardReset(hash);
             }
             PendingAction::TrimHistorySoftReset(hash) => {
+                let default_text = self
+                    .config
+                    .commit_templates
+                    .trim_history
+                    .replace("{hash}", &hash);
                 self.screen = Screen::InputModal(InputModalState {
                     action_name: format!("Trim commit history to {hash}"),
-                    default_text: "trim history".to_string(),
+                    default_text,
                     input: Input::default(),
                     flow: InputFlow::TrimHistory(hash),
                     return_screen,
@@ -923,9 +938,14 @@ impl App {
                 });
             }
             FilterFlow::SoftRevert => {
+                let default_text = self
+                    .config
+                    .commit_templates
+                    .soft_revert
+                    .replace("{hash}", &selected_hash);
                 self.screen = Screen::InputModal(InputModalState {
                     action_name: format!("Soft revert files to {selected_hash}"),
-                    default_text: format!("revert to {selected_hash}"),
+                    default_text,
                     input: Input::default(),
                     flow: InputFlow::SoftRevert(selected_hash),
                     return_screen,

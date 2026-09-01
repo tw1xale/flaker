@@ -169,11 +169,11 @@ fn execute_external_task(
                 if is_git {
                     let _ = git::git_add(&flake_dir, needs_sudo, "flake.lock");
                     let has_staged = git::has_staged_changes(&flake_dir).unwrap_or(false);
-
                     if has_staged {
+                        let default_text = app.config.commit_templates.flake_update.clone();
                         app.screen = Screen::InputModal(crate::app::InputModalState {
                             action_name: "Updating flake.lock".to_string(),
-                            default_text: "flake update".to_string(),
+                            default_text,
                             input: tui_input::Input::default(),
                             flow: crate::app::InputFlow::Lockfile,
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),

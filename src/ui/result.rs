@@ -1,4 +1,4 @@
-use crate::theme;
+use crate::theme::{self, Theme};
 use crate::ui::header::centered_rect;
 use ratatui::{
     Frame,
@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 
-/// Renders the result modal screen with dynamic return hint.
+/// Renders the result modal screen with dynamic return hint and themed colors.
 pub fn render_result(
     frame: &mut Frame,
     area: Rect,
@@ -16,11 +16,12 @@ pub fn render_result(
     title: &str,
     message: &str,
     hint: &str,
+    theme: &Theme,
 ) {
     let border_color: Color = if is_success {
-        theme::SUCCESS
+        theme.success
     } else {
-        theme::DANGER
+        theme.danger
     };
 
     let popup_width = 68.min(area.width.saturating_sub(4));
@@ -66,7 +67,7 @@ pub fn render_result(
     // Message
     let msg_p = Paragraph::new(Line::from(vec![Span::styled(
         message,
-        Style::default().fg(theme::MUTED_TEXT),
+        Style::default().fg(theme.muted_text),
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
@@ -75,7 +76,7 @@ pub fn render_result(
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
         hint,
-        Style::default().fg(theme::FAINT_HINT),
+        Style::default().fg(theme.faint_hint),
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });

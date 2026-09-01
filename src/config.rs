@@ -2,6 +2,111 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// General configuration for Flaker (explicit flake directories and targets).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GeneralConfig {
+    #[serde(default)]
+    pub flake_dir: String,
+
+    #[serde(default)]
+    pub flake_target: String,
+}
+
+/// Theme and color configuration for Flaker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeConfig {
+    #[serde(default = "default_palette")]
+    pub palette: String,
+
+    pub border: Option<String>,
+    pub header_title: Option<String>,
+    pub secondary_info: Option<String>,
+    pub muted_text: Option<String>,
+    pub faint_hint: Option<String>,
+    pub warning: Option<String>,
+    pub danger: Option<String>,
+    pub success: Option<String>,
+    pub accent: Option<String>,
+    pub selected: Option<String>,
+    pub text: Option<String>,
+    pub neutral_text: Option<String>,
+}
+
+fn default_palette() -> String {
+    "mocha".to_string()
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            palette: default_palette(),
+            border: None,
+            header_title: None,
+            secondary_info: None,
+            muted_text: None,
+            faint_hint: None,
+            warning: None,
+            danger: None,
+            success: None,
+            accent: None,
+            selected: None,
+            text: None,
+            neutral_text: None,
+        }
+    }
+}
+
+/// Default commit message templates for automatic actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitTemplatesConfig {
+    #[serde(default = "default_commit_rebuild")]
+    pub rebuild: String,
+
+    #[serde(default = "default_commit_flake_update")]
+    pub flake_update: String,
+
+    #[serde(default = "default_commit_full_cycle")]
+    pub full_cycle: String,
+
+    #[serde(default = "default_commit_soft_revert")]
+    pub soft_revert: String,
+
+    #[serde(default = "default_commit_trim_history")]
+    pub trim_history: String,
+}
+
+fn default_commit_rebuild() -> String {
+    "rebuild".to_string()
+}
+
+fn default_commit_flake_update() -> String {
+    "flake update".to_string()
+}
+
+fn default_commit_full_cycle() -> String {
+    "full update".to_string()
+}
+
+fn default_commit_soft_revert() -> String {
+    "revert to {hash}".to_string()
+}
+
+fn default_commit_trim_history() -> String {
+    "trim history to {hash}".to_string()
+}
+
+impl Default for CommitTemplatesConfig {
+    fn default() -> Self {
+        Self {
+            rebuild: default_commit_rebuild(),
+            flake_update: default_commit_flake_update(),
+            full_cycle: default_commit_full_cycle(),
+            soft_revert: default_commit_soft_revert(),
+            trim_history: default_commit_trim_history(),
+        }
+    }
+}
+
 /// Keybinding configuration for Flaker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeybindingsConfig {
@@ -244,6 +349,15 @@ fn format_keys_display(keys: &[String]) -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    pub general: GeneralConfig,
+
+    #[serde(default)]
+    pub theme: ThemeConfig,
+
+    #[serde(default)]
+    pub commit_templates: CommitTemplatesConfig,
+
+    #[serde(default)]
     pub keybindings: KeybindingsConfig,
 }
 
@@ -329,8 +443,37 @@ pub fn load_config() -> Config {
             }
         } else {
             // Automatically generate a default commented configuration file on first run
-            let default_template = r#"# Flaker Configuration File
+            let default_template = r##"# Flaker Configuration File
 # Location: ~/.config/flaker/config.toml
+
+[general]
+# Explicit flake directory path (leave empty for automatic detection)
+# Examples: "/etc/nixos", "~/dotfiles/nixos", "~/my-config"
+flake_dir = ""
+
+# Explicit flake target (leave empty for automatic detection)
+# Examples: "/etc/nixos#hostname", "~/dotfiles#my-user"
+flake_target = ""
+
+[theme]
+# Color palette. Available options:
+# "mocha" (default dark), "macchiato", "frappe", "latte" (light),
+# "nord", "tokyonight", "dracula", "gruvbox"
+palette = "mocha"
+
+# Optional custom color overrides (HEX format like "#89b4fa"):
+# border = "#89b4fa"
+# accent = "#cba6f7"
+# selected = "#f9e2af"
+# header_title = "#89dceb"
+
+[commit_templates]
+# Default commit messages for actions
+rebuild = "rebuild"
+flake_update = "flake update"
+full_cycle = "full update"
+soft_revert = "revert to {hash}"
+trim_history = "trim history to {hash}"
 
 [keybindings]
 # Enable instant single-digit selection (1, 2, 3...) for menu items
@@ -349,7 +492,7 @@ select = ["Enter"]
 back = ["Esc"]
 quit = ["q", "Ctrl-c"]
 clear_input = ["Ctrl-u"]
-"#;
+"##;
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
                 let _ = std::fs::write(path, default_template);
@@ -415,12 +558,26 @@ mod tests {
     #[test]
     fn test_default_config_parsing() {
         let toml_str = r#"
+            [general]
+            flake_dir = "/etc/nixos"
+            flake_target = "/etc/nixos#desktop"
+
+            [theme]
+            palette = "nord"
+
+            [commit_templates]
+            rebuild = "chore: rebuild system"
+
             [keybindings]
             enable_quick_digits = true
             up = ["Up", "w"]
             down = ["Down", "s"]
         "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.general.flake_dir, "/etc/nixos");
+        assert_eq!(cfg.general.flake_target, "/etc/nixos#desktop");
+        assert_eq!(cfg.theme.palette, "nord");
+        assert_eq!(cfg.commit_templates.rebuild, "chore: rebuild system");
         assert!(cfg.keybindings.enable_quick_digits);
         assert_eq!(cfg.keybindings.up, vec!["Up", "w"]);
         assert_eq!(cfg.keybindings.down, vec!["Down", "s"]);
