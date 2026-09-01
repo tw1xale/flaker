@@ -1,5 +1,6 @@
 mod actions;
 mod app;
+mod config;
 mod theme;
 mod ui;
 

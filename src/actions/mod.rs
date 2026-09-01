@@ -120,7 +120,11 @@ pub fn discover_flake_dir() -> PathBuf {
     candidates.push(PathBuf::from("/etc/nixos"));
 
     for candidate in candidates {
-        if candidate.join("flake.nix").exists() {
+        let flake_path = candidate.join("flake.nix");
+        if flake_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&flake_path)
+            && !parse_flake_configs(&content).is_empty()
+        {
             return candidate;
         }
     }
@@ -260,20 +264,40 @@ pub fn flush_stdin_events() {
 /// Prints a styled action header in terminal mode before command execution.
 pub fn print_action_header_cli(title: &str, command_desc: &str) {
     println!("\x1b[2J\x1b[H"); // Clear screen
+
+    let term_width = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80);
+
+    let content_len = title
+        .chars()
+        .count()
+        .max(command_desc.chars().count())
+        .max(58);
+    let inner_width = content_len.min(term_width.saturating_sub(4)).max(40);
+
+    let border_line = "─".repeat(inner_width + 2);
+
+    let format_line = |text: &str| -> String {
+        let char_count = text.chars().count();
+        if char_count > inner_width {
+            let truncated: String = text.chars().take(inner_width.saturating_sub(3)).collect();
+            format!("{truncated}...")
+        } else {
+            format!("{text:<width$}", width = inner_width)
+        }
+    };
+
+    println!("\x1b[38;2;137;180;250m╭{border_line}╮\x1b[0m");
     println!(
-        "\x1b[38;2;137;180;250m╭──────────────────────────────────────────────────────────────╮\x1b[0m"
+        "\x1b[38;2;137;180;250m│\x1b[0m \x1b[1;38;2;137;220;235m{}\x1b[0m \x1b[38;2;137;180;250m│\x1b[0m",
+        format_line(title)
     );
     println!(
-        "\x1b[38;2;137;180;250m│\x1b[0m \x1b[1;38;2;137;220;235m{:<60}\x1b[0m \x1b[38;2;137;180;250m│\x1b[0m",
-        title
+        "\x1b[38;2;137;180;250m│\x1b[0m \x1b[38;2;166;173;200m{}\x1b[0m \x1b[38;2;137;180;250m│\x1b[0m",
+        format_line(command_desc)
     );
-    println!(
-        "\x1b[38;2;137;180;250m│\x1b[0m \x1b[38;2;166;173;200m{:<60}\x1b[0m \x1b[38;2;137;180;250m│\x1b[0m",
-        command_desc
-    );
-    println!(
-        "\x1b[38;2;137;180;250m╰──────────────────────────────────────────────────────────────╯\x1b[0m\n"
-    );
+    println!("\x1b[38;2;137;180;250m╰{border_line}╯\x1b[0m\n");
 }
 
 /// Runs a command visibly on the terminal by temporarily suspending TUI raw mode and alternate screen.

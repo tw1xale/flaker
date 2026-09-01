@@ -146,6 +146,33 @@ FLAKER_DIR="/home/username/dotfiles" flaker
 
 ---
 
+## ⌨️ Custom Keybindings & Configuration
+
+Flaker automatically creates a configuration file at `~/.config/flaker/config.toml` (or `~/.config/flaker.toml`) on first launch with default keybindings.
+
+You can customize your preferred keys (including Vim keys, arrows, letters, and control combinations):
+
+```toml
+# ~/.config/flaker/config.toml
+
+[keybindings]
+# Navigation keys
+up = ["Up", "k"]
+down = ["Down", "j"]
+page_up = ["PageUp"]
+page_down = ["PageDown"]
+home = ["Home"]
+end = ["End"]
+
+# Action keys
+select = ["Enter"]
+back = ["Esc"]
+quit = ["q", "Ctrl-c"]
+clear_input = ["Ctrl-u"]
+```
+
+---
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
