@@ -21,7 +21,7 @@
         pkgs = import nixpkgs { inherit system; };
         flakerPkg = pkgs.rustPlatform.buildRustPackage {
           pname = "flaker";
-          version = "0.1.0";
+          version = "0.2.0";
           src = self;
 
           cargoLock = {

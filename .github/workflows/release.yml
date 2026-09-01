@@ -38,4 +38,5 @@ jobs:
           files: |
             flaker-x86_64-linux.tar.gz
             dist/flaker-x86_64-linux
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: false
