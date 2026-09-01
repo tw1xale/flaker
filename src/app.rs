@@ -881,14 +881,14 @@ impl App {
                     let ret = *state.return_screen.clone();
                     self.screen = ret;
                     return;
-                } else if self.config.keybindings.is_up(&key) {
+                } else if key.code == KeyCode::Up {
                     if state.selected_index > 0 {
                         state.selected_index -= 1;
                     } else if count > 0 {
                         state.selected_index = count - 1;
                     }
                     (None, count)
-                } else if self.config.keybindings.is_down(&key) {
+                } else if key.code == KeyCode::Down {
                     if count > 0 && state.selected_index + 1 < count {
                         state.selected_index += 1;
                     } else {

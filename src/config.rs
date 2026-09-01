@@ -314,11 +314,9 @@ impl KeybindingsConfig {
     }
 
     pub fn filter_hint(&self) -> String {
-        let up_s = format_keys_display(&self.up);
-        let down_s = format_keys_display(&self.down);
         let sel = format_keys_display(&self.select);
         let b = format_keys_display(&self.back);
-        format!("Type to filter • [{up_s}/{down_s}] Navigate • [{sel}] Select • [{b}] Cancel")
+        format!("Type to filter • [↑/↓] Navigate • [{sel}] Select • [{b}] Cancel")
     }
 
     pub fn pager_hint(&self, current: usize, total: usize) -> String {
@@ -653,7 +651,7 @@ mod tests {
         );
         assert_eq!(
             kb.filter_hint(),
-            "Type to filter • [w/s] Navigate • [Space] Select • [Esc] Cancel"
+            "Type to filter • [↑/↓] Navigate • [Space] Select • [Esc] Cancel"
         );
     }
 }

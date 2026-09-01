@@ -73,7 +73,7 @@ The application organizes all system management actions into logical submenus:
 - **Rebuild System (`rebuild switch`)**: Automatically checks for unstaged/staged changes, prompts for a commit message (with sensible default), commits, builds, switches configuration, and pushes to remote.
 - **Update Lockfile (`flake update`)**: Updates `flake.lock`, commits only the lockfile, and pushes to remote.
 - **Full Cycle (`update + switch`)**: Runs `flake update`, commits pending changes, rebuilds & activates the new generation, and pushes to remote.
-- **Test Build (`dry run`)**: Executes `nixos-rebuild build` to verify configuration compilation without touching the running system.
+- **Test Build**: Executes `nixos-rebuild build` to verify configuration compilation without activating it on the running system.
 
 ### 🧹 Maintenance
 - **Clean Garbage & Optimize Store**: Runs a three-step cleanup (`nix-collect-garbage -d` → `nix-store --gc` → `nix-store --optimise`). *Requires explicit confirmation.*
