@@ -7,12 +7,11 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem},
 };
 
-/// Renders a selectable menu list with optional digit prefixes and a dynamic hint footer.
+/// Renders a selectable menu list with optional digit prefixes and solid rounded borders.
 pub fn render_menu(
     frame: &mut Frame,
     area: Rect,
     header_title: &str,
-    hint_footer: &str,
     items: &[&str],
     selected_index: usize,
     show_numbers: bool,
@@ -56,10 +55,6 @@ pub fn render_menu(
             Style::default()
                 .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Span::styled(
-            format!("  {hint_footer}  "),
-            Style::default().fg(theme::FAINT_HINT),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
