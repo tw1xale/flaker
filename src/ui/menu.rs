@@ -7,21 +7,23 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem},
 };
 
-/// Renders a selectable menu list with optional digit prefixes and themed colors.
-pub fn render_menu(
-    frame: &mut Frame,
-    area: Rect,
-    header_title: &str,
-    items: &[&str],
-    selected_index: usize,
-    show_numbers: bool,
-    theme: &Theme,
-) {
-    let list_items: Vec<ListItem> = items
+pub struct MenuParams<'a> {
+    pub header_title: &'a str,
+    pub items: &'a [&'a str],
+    pub selected_index: usize,
+    pub show_numbers: bool,
+    pub back_item_key: &'a str,
+}
+
+/// Renders a selectable menu list with digit prefixes for actions, custom key for Back/Exit, and themed colors.
+pub fn render_menu(frame: &mut Frame, area: Rect, params: &MenuParams, theme: &Theme) {
+    let total_items = params.items.len();
+    let list_items: Vec<ListItem> = params
+        .items
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let is_selected = i == selected_index;
+            let is_selected = i == params.selected_index;
             let item_style = if is_selected {
                 Style::default()
                     .fg(theme.selected)
@@ -32,7 +34,7 @@ pub fn render_menu(
 
             let mut spans = vec![Span::raw(" ")];
 
-            if show_numbers {
+            if params.show_numbers {
                 let num_style = if is_selected {
                     Style::default()
                         .fg(theme.selected)
@@ -40,7 +42,15 @@ pub fn render_menu(
                 } else {
                     Style::default().fg(theme.secondary_info)
                 };
-                spans.push(Span::styled(format!("{}. ", i + 1), num_style));
+
+                if i + 1 == total_items && !params.back_item_key.trim().is_empty() {
+                    spans.push(Span::styled(
+                        format!("{}. ", params.back_item_key.trim()),
+                        num_style,
+                    ));
+                } else {
+                    spans.push(Span::styled(format!("{}. ", i + 1), num_style));
+                }
             }
 
             spans.push(Span::styled(*item, item_style));
@@ -52,7 +62,7 @@ pub fn render_menu(
 
     let block = Block::default()
         .title(Span::styled(
-            format!("  {} {header_title}  ", theme::ICON_BOLT),
+            format!("  {} {}  ", theme::ICON_BOLT, params.header_title),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
