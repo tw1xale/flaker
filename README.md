@@ -33,11 +33,24 @@
 
 ## 🎨 Theme & Mode Gallery
 
-| ❄️ Nord Palette | 🍂 Gruvbox Palette |
-| :---: | :---: |
-| ![Nord Theme](assets/nord.png) | ![Gruvbox Theme](assets/gruvbox.png) |
-| **☕ Latte (Light) Palette** | **🔢 Classic Mode (`enable_quick_digits = false`)** |
-| ![Latte Theme](assets/latte.png) | ![Non-buttons Mode](assets/nonbuttons.png) |
+<table>
+  <tr>
+    <th width="50%" align="center">❄️ Nord Palette</th>
+    <th width="50%" align="center">🍂 Gruvbox Palette</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/nord.png" alt="Nord Theme" width="100%"></td>
+    <td align="center"><img src="assets/gruvbox.png" alt="Gruvbox Theme" width="100%"></td>
+  </tr>
+  <tr>
+    <th width="50%" align="center">☕ Latte (Light) Palette</th>
+    <th width="50%" align="center">🔢 Classic Mode (<code>enable_quick_digits = false</code>)</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/latte.png" alt="Latte Theme" width="100%"></td>
+    <td align="center"><img src="assets/nonbuttons.png" alt="Classic Mode" width="100%"></td>
+  </tr>
+</table>
 
 ---
 
