@@ -20,6 +20,23 @@ pub fn parse_hex_color(hex: &str) -> Option<Color> {
     }
 }
 
+/// Converts a ratatui Color into an ANSI 24-bit/indexed foreground escape string.
+pub fn to_ansi_fg(color: Color) -> String {
+    match color {
+        Color::Rgb(r, g, b) => format!("\x1b[38;2;{r};{g};{b}m"),
+        Color::Indexed(i) => format!("\x1b[38;5;{i}m"),
+        Color::Red => "\x1b[31m".to_string(),
+        Color::Green => "\x1b[32m".to_string(),
+        Color::Yellow => "\x1b[33m".to_string(),
+        Color::Blue => "\x1b[34m".to_string(),
+        Color::Magenta => "\x1b[35m".to_string(),
+        Color::Cyan => "\x1b[36m".to_string(),
+        Color::White => "\x1b[37m".to_string(),
+        Color::Black => "\x1b[30m".to_string(),
+        _ => "\x1b[39m".to_string(),
+    }
+}
+
 /// Dynamic theme configuration supporting Catppuccin, Nord, Tokyo Night, Dracula, Gruvbox, and custom hex overrides.
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
@@ -308,5 +325,14 @@ mod tests {
         };
         let t = Theme::from_config(&cfg);
         assert_eq!(t.border, Color::Rgb(136, 192, 208));
+    }
+
+    #[test]
+    fn test_to_ansi_fg() {
+        assert_eq!(
+            to_ansi_fg(Color::Rgb(136, 192, 208)),
+            "\x1b[38;2;136;192;208m"
+        );
+        assert_eq!(to_ansi_fg(Color::Red), "\x1b[31m");
     }
 }

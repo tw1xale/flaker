@@ -282,8 +282,19 @@ pub fn flush_stdin_events() {
     }
 }
 
-/// Prints a styled action header in terminal mode before command execution.
+/// Prints a styled action header in terminal mode before command execution, using the configured palette.
 pub fn print_action_header_cli(title: &str, command_desc: &str) {
+    let config = crate::config::load_config();
+    let theme = crate::theme::Theme::from_config(&config.theme);
+    print_action_header_cli_with_theme(title, command_desc, &theme);
+}
+
+/// Prints a styled action header in terminal mode before command execution with a specific Theme.
+pub fn print_action_header_cli_with_theme(
+    title: &str,
+    command_desc: &str,
+    theme: &crate::theme::Theme,
+) {
     println!("\x1b[2J\x1b[H"); // Clear screen
 
     let term_width = crossterm::terminal::size()
@@ -309,16 +320,20 @@ pub fn print_action_header_cli(title: &str, command_desc: &str) {
         }
     };
 
-    println!("\x1b[38;2;137;180;250m╭{border_line}╮\x1b[0m");
+    let border_fg = crate::theme::to_ansi_fg(theme.border);
+    let title_fg = crate::theme::to_ansi_fg(theme.header_title);
+    let desc_fg = crate::theme::to_ansi_fg(theme.muted_text);
+
+    println!("{border_fg}╭{border_line}╮\x1b[0m");
     println!(
-        "\x1b[38;2;137;180;250m│\x1b[0m \x1b[1;38;2;137;220;235m{}\x1b[0m \x1b[38;2;137;180;250m│\x1b[0m",
+        "{border_fg}│\x1b[0m \x1b[1m{title_fg}{}\x1b[0m {border_fg}│\x1b[0m",
         format_line(title)
     );
     println!(
-        "\x1b[38;2;137;180;250m│\x1b[0m \x1b[38;2;166;173;200m{}\x1b[0m \x1b[38;2;137;180;250m│\x1b[0m",
+        "{border_fg}│\x1b[0m {desc_fg}{}\x1b[0m {border_fg}│\x1b[0m",
         format_line(command_desc)
     );
-    println!("\x1b[38;2;137;180;250m╰{border_line}╯\x1b[0m\n");
+    println!("{border_fg}╰{border_line}╯\x1b[0m\n");
 }
 
 /// Runs a command visibly on the terminal by temporarily suspending TUI raw mode and alternate screen.
