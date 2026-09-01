@@ -1,8 +1,9 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout},
-    widgets::Clear,
+    layout::{Alignment, Constraint, Layout},
+    style::Style,
+    widgets::{Clear, Paragraph},
 };
 use std::path::PathBuf;
 use tui_input::Input;
@@ -191,9 +192,11 @@ impl App {
                 let chunks = Layout::vertical([
                     Constraint::Length(7), // Header box
                     Constraint::Length(1), // Spacer
-                    Constraint::Length(7), // Menu items (4 items + borders)
+                    Constraint::Length(6), // Menu items box (4 items + 2 borders)
+                    Constraint::Length(1), // Spacer
+                    Constraint::Length(1), // Centered navigation hint below
                 ])
-                .split(centered_rect(64, 15, area));
+                .split(centered_rect(64, 16, area));
 
                 render_header(
                     frame,
@@ -219,17 +222,20 @@ impl App {
                     item3.as_str(),
                 ];
 
-                let hint = self.config.keybindings.menu_hint(items.len());
-
                 render_menu(
                     frame,
                     chunks[2],
                     "Select an action",
-                    &hint,
                     &items,
                     self.top_menu_index,
                     self.config.keybindings.enable_quick_digits,
                 );
+
+                let hint = self.config.keybindings.menu_hint(items.len());
+                let hint_p = Paragraph::new(hint)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(theme::FAINT_HINT));
+                frame.render_widget(hint_p, chunks[4]);
             }
 
             Screen::SubMenu(kind) => {
@@ -271,19 +277,31 @@ impl App {
                 };
 
                 let item_refs: Vec<&str> = items.iter().map(String::as_str).collect();
-                let menu_height = (items.len() as u16) + 2;
-                let centered = centered_rect(64, menu_height, area);
-                let hint = self.config.keybindings.menu_hint(items.len());
+                let menu_box_height = (items.len() as u16) + 2;
+                let total_height = menu_box_height + 2;
+                let centered = centered_rect(64, total_height, area);
+
+                let chunks = Layout::vertical([
+                    Constraint::Length(menu_box_height), // Menu box with solid rounded borders
+                    Constraint::Length(1),               // Spacer
+                    Constraint::Length(1),               // Centered navigation hint below
+                ])
+                .split(centered);
 
                 render_menu(
                     frame,
-                    centered,
+                    chunks[0],
                     title,
-                    &hint,
                     &item_refs,
                     self.submenu_index,
                     self.config.keybindings.enable_quick_digits,
                 );
+
+                let hint = self.config.keybindings.menu_hint(items.len());
+                let hint_p = Paragraph::new(hint)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(theme::FAINT_HINT));
+                frame.render_widget(hint_p, chunks[2]);
             }
 
             Screen::Confirm(state) => {
