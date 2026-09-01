@@ -1,6 +1,6 @@
 # ❄️ Flaker
 
-An interactive TUI manager for administering and maintaining **NixOS** configurations based on **Flakes**, written in **Rust** using [**Ratatui**](https://github.com/ratatui/ratatui) and the [**Catppuccin Mocha**](https://github.com/catppuccin/catppuccin) color palette.
+An interactive TUI manager for administering and maintaining **NixOS** configurations based on **Flakes**, written in **Rust** using [**Ratatui**](https://github.com/ratatui/ratatui).
 
 Flaker requires a [Nerd Font](https://www.nerdfonts.com/) (or a Nerd Font patched terminal font) to render its icons correctly.
 
@@ -93,17 +93,11 @@ Destructive operations (such as Hard Reset, Store Cleanup, and Force Pushes) **a
 
 ---
 
-## 🎨 Theme
+## 🎨 Themes & Styling
 
-Styled with the [**Catppuccin Mocha**](https://github.com/catppuccin/catppuccin) dark palette:
-- **Blue**: Borders & active cursor indicators
-- **Sky**: Headers and titles
-- **Sapphire**: Flake targets and metadata
-- **Peach / Red**: Warning & danger dialogs
-- **Green**: Successful operations & diff additions
-- **Yellow**: Active menu selection highlight
-- **Mauve**: Section titles & match highlights
-- **Terminal Transparent**: Never forces a background fill, perfectly matching your terminal emulator's opacity settings.
+Flaker includes built-in palettes (**Catppuccin** Mocha/Macchiato/Frappé/Latte, **Nord**, **Tokyo Night**, **Dracula**, **Gruvbox**) and supports custom HEX overrides in `config.toml`:
+
+- **Terminal Transparent**: Never forces an opaque background fill, perfectly matching your terminal emulator's opacity and blur settings.
 
 ---
 
