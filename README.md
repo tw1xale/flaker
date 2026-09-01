@@ -43,7 +43,7 @@
     <td align="center"><img src="assets/gruvbox.png" alt="Gruvbox Theme" width="100%"></td>
   </tr>
   <tr>
-    <th width="50%" align="center">☕ Latte (Light) Palette</th>
+    <th width="50%" align="center">☕ Latte Palette</th>
     <th width="50%" align="center">🔢 Classic Mode (<code>enable_quick_digits = false</code>)</th>
   </tr>
   <tr>
@@ -177,7 +177,7 @@ flake_target = ""
 
 [theme]
 # Color palette. Available options:
-# "mocha" (default dark), "macchiato", "frappe", "latte" (light),
+# "mocha" (default), "macchiato", "frappe", "latte",
 # "nord", "tokyonight", "dracula", "gruvbox"
 palette = "mocha"
 
