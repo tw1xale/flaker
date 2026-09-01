@@ -1,7 +1,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::Style,
     widgets::{Clear, Paragraph},
 };
@@ -235,11 +235,17 @@ impl App {
                 };
                 render_menu(frame, chunks[2], &menu_params, &self.theme);
 
-                let hint = self.config.keybindings.menu_hint(items.len(), true);
+                let hint = self.config.keybindings.menu_hint(items.len());
+                let hint_area = Rect {
+                    x: area.x,
+                    y: chunks[4].y,
+                    width: area.width,
+                    height: chunks[4].height,
+                };
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
                     .style(Style::default().fg(self.theme.faint_hint));
-                frame.render_widget(hint_p, chunks[4]);
+                frame.render_widget(hint_p, hint_area);
             }
 
             Screen::SubMenu(kind) => {
@@ -301,11 +307,17 @@ impl App {
                 };
                 render_menu(frame, chunks[0], &menu_params, &self.theme);
 
-                let hint = self.config.keybindings.menu_hint(items.len(), false);
+                let hint = self.config.keybindings.menu_hint(items.len());
+                let hint_area = Rect {
+                    x: area.x,
+                    y: chunks[2].y,
+                    width: area.width,
+                    height: chunks[2].height,
+                };
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
                     .style(Style::default().fg(self.theme.faint_hint));
-                frame.render_widget(hint_p, chunks[2]);
+                frame.render_widget(hint_p, hint_area);
             }
 
             Screen::Confirm(state) => {
