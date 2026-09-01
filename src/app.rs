@@ -219,12 +219,16 @@ impl App {
                     item3.as_str(),
                 ];
 
+                let hint = self.config.keybindings.menu_hint(items.len());
+
                 render_menu(
                     frame,
                     chunks[2],
                     "Select an action",
+                    &hint,
                     &items,
                     self.top_menu_index,
+                    self.config.keybindings.enable_quick_digits,
                 );
             }
 
@@ -269,11 +273,22 @@ impl App {
                 let item_refs: Vec<&str> = items.iter().map(String::as_str).collect();
                 let menu_height = (items.len() as u16) + 2;
                 let centered = centered_rect(64, menu_height, area);
-                render_menu(frame, centered, title, &item_refs, self.submenu_index);
+                let hint = self.config.keybindings.menu_hint(items.len());
+
+                render_menu(
+                    frame,
+                    centered,
+                    title,
+                    &hint,
+                    &item_refs,
+                    self.submenu_index,
+                    self.config.keybindings.enable_quick_digits,
+                );
             }
 
             Screen::Confirm(state) => {
                 let lines_ref: Vec<&str> = state.lines.iter().map(String::as_str).collect();
+                let hint = self.config.keybindings.confirm_hint();
                 let params = ConfirmParams {
                     title: &state.title,
                     lines: &lines_ref,
@@ -281,17 +296,20 @@ impl App {
                     negative_label: &state.negative_label,
                     selected_button: state.selected_button,
                     is_danger: state.is_danger,
+                    hint: &hint,
                 };
                 render_confirm(frame, area, &params);
             }
 
             Screen::InputModal(state) => {
+                let hint = self.config.keybindings.input_modal_hint();
                 render_input_modal(
                     frame,
                     area,
                     &state.action_name,
                     &state.input,
                     &state.default_text,
+                    &hint,
                 );
             }
 
@@ -301,6 +319,7 @@ impl App {
                     .iter()
                     .map(|(s, indices)| (s.as_str(), indices.clone()))
                     .collect();
+                let hint = self.config.keybindings.filter_hint();
 
                 render_filter(
                     frame,
@@ -309,15 +328,35 @@ impl App {
                     &state.input,
                     &filtered_refs,
                     state.selected_index,
+                    &hint,
                 );
             }
 
             Screen::Pager(state) => {
-                render_pager(frame, area, &state.title, &state.lines, state.scroll_offset);
+                let hint = self
+                    .config
+                    .keybindings
+                    .pager_hint(state.scroll_offset + 1, state.lines.len());
+                render_pager(
+                    frame,
+                    area,
+                    &state.title,
+                    &state.lines,
+                    state.scroll_offset,
+                    &hint,
+                );
             }
 
             Screen::Result(state) => {
-                render_result(frame, area, state.is_success, &state.title, &state.message);
+                let hint = self.config.keybindings.result_hint();
+                render_result(
+                    frame,
+                    area,
+                    state.is_success,
+                    &state.title,
+                    &state.message,
+                    &hint,
+                );
             }
         }
     }
@@ -335,6 +374,15 @@ impl App {
     }
 
     fn handle_top_menu_key(&mut self, key: KeyEvent) {
+        // Quick digit selection
+        if let Some(digit_idx) = self.config.keybindings.get_digit_index(&key)
+            && digit_idx < 4
+        {
+            self.top_menu_index = digit_idx;
+            self.trigger_top_menu_item(digit_idx);
+            return;
+        }
+
         if self.config.keybindings.is_up(&key) {
             if self.top_menu_index > 0 {
                 self.top_menu_index -= 1;
@@ -348,37 +396,41 @@ impl App {
                 self.top_menu_index = 0;
             }
         } else if self.config.keybindings.is_select(&key) {
-            match self.top_menu_index {
-                0 => {
-                    self.submenu_index = 0;
-                    self.screen = Screen::SubMenu(SubMenuKind::Updates);
-                }
-                1 => {
-                    self.submenu_index = 0;
-                    self.screen = Screen::SubMenu(SubMenuKind::Maintenance);
-                }
-                2 => {
-                    if !self.is_git {
-                        self.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "GIT NOT DETECTED".to_string(),
-                            message: format!(
-                                "No Git repository found in {}.\nGit history and rollback operations are unavailable.",
-                                self.flake_dir.display()
-                            ),
-                            return_screen: Box::new(Screen::TopMenu),
-                        });
-                    } else {
-                        self.submenu_index = 0;
-                        self.screen = Screen::SubMenu(SubMenuKind::GitHistory);
-                    }
-                }
-                _ => {
-                    self.should_quit = true;
-                }
-            }
+            self.trigger_top_menu_item(self.top_menu_index);
         } else if self.config.keybindings.is_back(&key) || self.config.keybindings.is_quit(&key) {
             self.should_quit = true;
+        }
+    }
+
+    fn trigger_top_menu_item(&mut self, index: usize) {
+        match index {
+            0 => {
+                self.submenu_index = 0;
+                self.screen = Screen::SubMenu(SubMenuKind::Updates);
+            }
+            1 => {
+                self.submenu_index = 0;
+                self.screen = Screen::SubMenu(SubMenuKind::Maintenance);
+            }
+            2 => {
+                if !self.is_git {
+                    self.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "GIT NOT DETECTED".to_string(),
+                        message: format!(
+                            "No Git repository found in {}.\nGit history and rollback operations are unavailable.",
+                            self.flake_dir.display()
+                        ),
+                        return_screen: Box::new(Screen::TopMenu),
+                    });
+                } else {
+                    self.submenu_index = 0;
+                    self.screen = Screen::SubMenu(SubMenuKind::GitHistory);
+                }
+            }
+            _ => {
+                self.should_quit = true;
+            }
         }
     }
 
@@ -388,6 +440,15 @@ impl App {
             SubMenuKind::Maintenance => 3,
             SubMenuKind::GitHistory => 5,
         };
+
+        // Quick digit selection
+        if let Some(digit_idx) = self.config.keybindings.get_digit_index(&key)
+            && digit_idx < count
+        {
+            self.submenu_index = digit_idx;
+            self.trigger_sub_menu_item(kind, digit_idx);
+            return;
+        }
 
         if self.config.keybindings.is_up(&key) {
             if self.submenu_index > 0 {
@@ -1021,6 +1082,7 @@ mod tests {
     #[test]
     fn test_app_keybindings_custom() {
         let mut app = App::new();
+        app.config.keybindings.enable_quick_digits = false;
         app.config.keybindings.down = vec!["s".to_string()];
         app.config.keybindings.up = vec!["w".to_string()];
 
@@ -1029,5 +1091,26 @@ mod tests {
 
         app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
         assert_eq!(app.top_menu_index, 0);
+    }
+
+    #[test]
+    fn test_app_digit_quick_selection() {
+        let mut app = App::new();
+        app.config.keybindings.enable_quick_digits = true;
+
+        // Press '1' on top menu -> opens Updates submenu
+        app.handle_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::SubMenu(SubMenuKind::Updates)));
+
+        // Press '5' on Updates submenu -> Back to top menu
+        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::TopMenu));
+
+        // Press '2' on top menu -> opens Maintenance submenu
+        app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.screen,
+            Screen::SubMenu(SubMenuKind::Maintenance)
+        ));
     }
 }

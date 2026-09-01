@@ -7,13 +7,14 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
-/// Renders a scrollable text pager for diffs or generation history.
+/// Renders a scrollable text pager for diffs or generation history with dynamic keybinding hint.
 pub fn render_pager(
     frame: &mut Frame,
     area: Rect,
     title: &str,
     content_lines: &[String],
     scroll_offset: usize,
+    footer_hint: &str,
 ) {
     let popup_area = Rect {
         x: area.x + 1,
@@ -73,20 +74,8 @@ pub fn render_pager(
     let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, chunks[0]);
 
-    // Footer hint
-    let total = content_lines.len();
-    let current_pos = if total == 0 {
-        0
-    } else {
-        (scroll_offset + 1).min(total)
-    };
-
-    let footer_text = format!(
-        " [Esc / q / Enter] Return  •  [↑/↓/j/k/PgUp/PgDn] Scroll ({current_pos}/{total}) "
-    );
-
     let footer_p = Paragraph::new(Line::from(vec![Span::styled(
-        footer_text,
+        footer_hint,
         Style::default().fg(theme::FAINT_HINT),
     )]))
     .alignment(Alignment::Right);

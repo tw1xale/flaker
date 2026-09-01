@@ -8,8 +8,15 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 
-/// Renders the result modal screen.
-pub fn render_result(frame: &mut Frame, area: Rect, is_success: bool, title: &str, message: &str) {
+/// Renders the result modal screen with dynamic return hint.
+pub fn render_result(
+    frame: &mut Frame,
+    area: Rect,
+    is_success: bool,
+    title: &str,
+    message: &str,
+    hint: &str,
+) {
     let border_color: Color = if is_success {
         theme::SUCCESS
     } else {
@@ -67,7 +74,7 @@ pub fn render_result(frame: &mut Frame, area: Rect, is_success: bool, title: &st
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
-        " ⏎  Press [Enter] to return to main menu...",
+        hint,
         Style::default().fg(theme::FAINT_HINT),
     )]))
     .alignment(Alignment::Center)

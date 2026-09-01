@@ -5,6 +5,9 @@ use std::path::PathBuf;
 /// Keybinding configuration for Flaker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeybindingsConfig {
+    #[serde(default = "default_enable_quick_digits")]
+    pub enable_quick_digits: bool,
+
     #[serde(default = "default_up")]
     pub up: Vec<String>,
 
@@ -34,6 +37,10 @@ pub struct KeybindingsConfig {
 
     #[serde(default = "default_clear_input")]
     pub clear_input: Vec<String>,
+}
+
+fn default_enable_quick_digits() -> bool {
+    true
 }
 
 fn default_up() -> Vec<String> {
@@ -79,6 +86,7 @@ fn default_clear_input() -> Vec<String> {
 impl Default for KeybindingsConfig {
     fn default() -> Self {
         Self {
+            enable_quick_digits: default_enable_quick_digits(),
             up: default_up(),
             down: default_down(),
             page_up: default_page_up(),
@@ -133,6 +141,103 @@ impl KeybindingsConfig {
     pub fn is_clear_input(&self, key: &KeyEvent) -> bool {
         self.clear_input.iter().any(|k| matches_key(key, k))
     }
+
+    /// If quick digits are enabled and the pressed key is a digit '1'-'9', returns the 0-based index.
+    pub fn get_digit_index(&self, key: &KeyEvent) -> Option<usize> {
+        if !self.enable_quick_digits {
+            return None;
+        }
+
+        if !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && let KeyCode::Char(c) = key.code
+            && let Some(digit) = c.to_digit(10)
+            && digit >= 1
+        {
+            return Some((digit - 1) as usize);
+        }
+
+        None
+    }
+
+    pub fn nav_hint(&self) -> String {
+        let up_s = format_keys_display(&self.up);
+        let down_s = format_keys_display(&self.down);
+        format!("[{up_s}/{down_s}] Navigate")
+    }
+
+    pub fn menu_hint(&self, count: usize) -> String {
+        let nav = self.nav_hint();
+        let sel = format_keys_display(&self.select);
+        if self.enable_quick_digits && count > 0 {
+            format!("[1-{count}] Quick select  •  {nav}  •  [{sel}] Select")
+        } else {
+            format!("{nav}  •  [{sel}] Select")
+        }
+    }
+
+    pub fn confirm_hint(&self) -> String {
+        let sel = format_keys_display(&self.select);
+        let b = format_keys_display(&self.back);
+        format!("Use [←/→/Tab] to toggle  •  [{sel}] Confirm  •  [{b}] Cancel")
+    }
+
+    pub fn input_modal_hint(&self) -> String {
+        let sel = format_keys_display(&self.select);
+        let b = format_keys_display(&self.back);
+        format!("Press [{sel}] to confirm (or use default)  •  [{b}] Cancel")
+    }
+
+    pub fn filter_hint(&self) -> String {
+        let up_s = format_keys_display(&self.up);
+        let down_s = format_keys_display(&self.down);
+        let sel = format_keys_display(&self.select);
+        let b = format_keys_display(&self.back);
+        format!("Type to filter • [{up_s}/{down_s}] Navigate • [{sel}] Select • [{b}] Cancel")
+    }
+
+    pub fn pager_hint(&self, current: usize, total: usize) -> String {
+        let b = format_keys_display(&self.back);
+        let q = format_keys_display(&self.quit);
+        let sel = format_keys_display(&self.select);
+        let up_s = format_keys_display(&self.up);
+        let down_s = format_keys_display(&self.down);
+        format!(
+            " [{b} / {q} / {sel}] Return  •  [{up_s}/{down_s}/PgUp/PgDn] Scroll ({current}/{total}) "
+        )
+    }
+
+    pub fn result_hint(&self) -> String {
+        let sel = format_keys_display(&self.select);
+        format!(" ⏎  Press [{sel}] to return...")
+    }
+}
+
+fn format_keys_display(keys: &[String]) -> String {
+    let mut display_list = Vec::new();
+    for k in keys {
+        let d = match k.to_lowercase().as_str() {
+            "up" => "↑".to_string(),
+            "down" => "↓".to_string(),
+            "left" => "←".to_string(),
+            "right" => "→".to_string(),
+            "pageup" | "page_up" => "PgUp".to_string(),
+            "pagedown" | "page_down" => "PgDn".to_string(),
+            "enter" | "return" => "Enter".to_string(),
+            "esc" | "escape" => "Esc".to_string(),
+            "space" => "Space".to_string(),
+            "tab" => "Tab".to_string(),
+            "backspace" => "Backspace".to_string(),
+            "ctrl-c" => "Ctrl-c".to_string(),
+            "ctrl-u" => "Ctrl-u".to_string(),
+            "ctrl-d" => "Ctrl-d".to_string(),
+            _ => k.to_string(),
+        };
+        if !display_list.contains(&d) {
+            display_list.push(d);
+        }
+    }
+    display_list.join("/")
 }
 
 /// Global Flaker application configuration.
@@ -228,6 +333,9 @@ pub fn load_config() -> Config {
 # Location: ~/.config/flaker/config.toml
 
 [keybindings]
+# Enable instant single-digit selection (1, 2, 3...) for menu items
+enable_quick_digits = true
+
 # Navigation keys
 up = ["Up", "k"]
 down = ["Down", "j"]
@@ -308,12 +416,57 @@ mod tests {
     fn test_default_config_parsing() {
         let toml_str = r#"
             [keybindings]
+            enable_quick_digits = true
             up = ["Up", "w"]
             down = ["Down", "s"]
         "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.keybindings.enable_quick_digits);
         assert_eq!(cfg.keybindings.up, vec!["Up", "w"]);
         assert_eq!(cfg.keybindings.down, vec!["Down", "s"]);
         assert_eq!(cfg.keybindings.select, vec!["Enter"]);
+    }
+
+    #[test]
+    fn test_get_digit_index() {
+        let kb = KeybindingsConfig::default();
+        let key1 = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE);
+        let key2 = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
+        let key0 = KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE);
+        let key_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+
+        assert_eq!(kb.get_digit_index(&key1), Some(0));
+        assert_eq!(kb.get_digit_index(&key2), Some(1));
+        assert_eq!(kb.get_digit_index(&key0), None);
+        assert_eq!(kb.get_digit_index(&key_a), None);
+    }
+
+    #[test]
+    fn test_dynamic_hints() {
+        let kb = KeybindingsConfig {
+            up: vec!["w".to_string()],
+            down: vec!["s".to_string()],
+            select: vec!["Space".to_string()],
+            back: vec!["q".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(kb.nav_hint(), "[w/s] Navigate");
+        assert_eq!(
+            kb.menu_hint(4),
+            "[1-4] Quick select  •  [w/s] Navigate  •  [Space] Select"
+        );
+        assert_eq!(
+            kb.confirm_hint(),
+            "Use [←/→/Tab] to toggle  •  [Space] Confirm  •  [q] Cancel"
+        );
+        assert_eq!(
+            kb.input_modal_hint(),
+            "Press [Space] to confirm (or use default)  •  [q] Cancel"
+        );
+        assert_eq!(
+            kb.filter_hint(),
+            "Type to filter • [w/s] Navigate • [Space] Select • [q] Cancel"
+        );
     }
 }

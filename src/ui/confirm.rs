@@ -15,6 +15,7 @@ pub struct ConfirmParams<'a> {
     pub negative_label: &'a str,
     pub selected_button: usize, // 0 for affirmative, 1 for negative
     pub is_danger: bool,
+    pub hint: &'a str,
 }
 
 /// Renders a confirmation dialog.
@@ -109,7 +110,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams) {
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
-        "Use [←/→/Tab] to toggle  •  [Enter] Confirm  •  [Esc] Cancel",
+        params.hint,
         Style::default().fg(theme::FAINT_HINT),
     )]))
     .alignment(Alignment::Center)
