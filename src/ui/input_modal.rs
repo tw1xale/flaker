@@ -9,13 +9,14 @@ use ratatui::{
 };
 use tui_input::Input;
 
-/// Renders the commit message input modal.
+/// Renders the commit message input modal with dynamic keybinding hint.
 pub fn render_input_modal(
     frame: &mut Frame,
     area: Rect,
     action_name: &str,
     input: &Input,
     default_text: &str,
+    hint: &str,
 ) {
     let popup_width = 68.min(area.width.saturating_sub(4));
     let popup_height = 11.min(area.height.saturating_sub(2));
@@ -62,7 +63,7 @@ pub fn render_input_modal(
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
-        "Press [Enter] to confirm (or use default)  •  [Esc] Cancel",
+        hint,
         Style::default().fg(theme::FAINT_HINT),
     )]))
     .alignment(Alignment::Center)

@@ -7,20 +7,22 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem},
 };
 
-/// Renders a selectable menu list.
+/// Renders a selectable menu list with optional digit prefixes and a dynamic hint footer.
 pub fn render_menu(
     frame: &mut Frame,
     area: Rect,
     header_title: &str,
+    hint_footer: &str,
     items: &[&str],
     selected_index: usize,
+    show_numbers: bool,
 ) {
     let list_items: Vec<ListItem> = items
         .iter()
         .enumerate()
         .map(|(i, item)| {
             let is_selected = i == selected_index;
-            let style = if is_selected {
+            let item_style = if is_selected {
                 Style::default()
                     .fg(theme::SELECTED)
                     .add_modifier(Modifier::BOLD)
@@ -28,8 +30,22 @@ pub fn render_menu(
                 Style::default().fg(theme::TEXT)
             };
 
-            let line = Line::from(vec![Span::raw(" "), Span::styled(*item, style)]);
+            let mut spans = vec![Span::raw(" ")];
 
+            if show_numbers {
+                let num_style = if is_selected {
+                    Style::default()
+                        .fg(theme::SELECTED)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::SECONDARY_INFO)
+                };
+                spans.push(Span::styled(format!("{}. ", i + 1), num_style));
+            }
+
+            spans.push(Span::styled(*item, item_style));
+
+            let line = Line::from(spans);
             ListItem::new(line)
         })
         .collect();
@@ -40,6 +56,10 @@ pub fn render_menu(
             Style::default()
                 .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            format!("  {hint_footer}  "),
+            Style::default().fg(theme::FAINT_HINT),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

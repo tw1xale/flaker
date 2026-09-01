@@ -9,7 +9,7 @@ use ratatui::{
 };
 use tui_input::Input;
 
-/// Renders the commit selection fuzzy filter modal.
+/// Renders the commit selection fuzzy filter modal with dynamic keybinding hint.
 pub fn render_filter(
     frame: &mut Frame,
     area: Rect,
@@ -17,6 +17,7 @@ pub fn render_filter(
     input: &Input,
     filtered_items: &[(&str, Vec<usize>)], // (commit_line, matched_char_indices)
     selected_index: usize,
+    hint: &str,
 ) {
     let popup_width = 76.min(area.width.saturating_sub(4));
     let popup_height = 23.min(area.height.saturating_sub(2));
@@ -64,7 +65,7 @@ pub fn render_filter(
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
-        "Type to filter • [↑/↓/j/k] Navigate • [Enter] Select • [Esc] Cancel",
+        hint,
         Style::default().fg(theme::FAINT_HINT),
     )]))
     .alignment(Alignment::Center)
@@ -111,7 +112,6 @@ pub fn render_filter(
         0
     };
 
-    // Width available for commit text inside list (accounting for left space margin)
     let max_col_width = list_area.width.saturating_sub(2) as usize;
 
     let list_items: Vec<ListItem> = filtered_items
