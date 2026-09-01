@@ -9,6 +9,7 @@ use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::actions::{detect_flake_context, git, nix};
+use crate::config::{Config, load_config};
 use crate::theme;
 use crate::ui::{
     confirm::{ConfirmParams, render_confirm},
@@ -137,6 +138,7 @@ pub struct App {
     pub flake_target: String,
     pub is_git: bool,
     pub needs_sudo: bool,
+    pub config: Config,
     pub pending_external_task: ExternalTask,
 }
 
@@ -152,6 +154,7 @@ impl App {
         let user = whoami::fallible::username().unwrap_or_else(|_| "user".to_string());
         let generation = nix::get_system_generation();
         let ctx = detect_flake_context();
+        let config = load_config();
 
         Self {
             should_quit: false,
@@ -165,6 +168,7 @@ impl App {
             flake_target: ctx.flake_target,
             is_git: ctx.is_git,
             needs_sudo: ctx.needs_sudo,
+            config,
             pending_external_task: ExternalTask::None,
         }
     }
@@ -331,22 +335,20 @@ impl App {
     }
 
     fn handle_top_menu_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.top_menu_index > 0 {
-                    self.top_menu_index -= 1;
-                } else {
-                    self.top_menu_index = 3;
-                }
+        if self.config.keybindings.is_up(&key) {
+            if self.top_menu_index > 0 {
+                self.top_menu_index -= 1;
+            } else {
+                self.top_menu_index = 3;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.top_menu_index < 3 {
-                    self.top_menu_index += 1;
-                } else {
-                    self.top_menu_index = 0;
-                }
+        } else if self.config.keybindings.is_down(&key) {
+            if self.top_menu_index < 3 {
+                self.top_menu_index += 1;
+            } else {
+                self.top_menu_index = 0;
             }
-            KeyCode::Enter => match self.top_menu_index {
+        } else if self.config.keybindings.is_select(&key) {
+            match self.top_menu_index {
                 0 => {
                     self.submenu_index = 0;
                     self.screen = Screen::SubMenu(SubMenuKind::Updates);
@@ -374,11 +376,9 @@ impl App {
                 _ => {
                     self.should_quit = true;
                 }
-            },
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.should_quit = true;
             }
-            _ => {}
+        } else if self.config.keybindings.is_back(&key) || self.config.keybindings.is_quit(&key) {
+            self.should_quit = true;
         }
     }
 
@@ -389,28 +389,24 @@ impl App {
             SubMenuKind::GitHistory => 5,
         };
 
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.submenu_index > 0 {
-                    self.submenu_index -= 1;
-                } else {
-                    self.submenu_index = count - 1;
-                }
+        if self.config.keybindings.is_up(&key) {
+            if self.submenu_index > 0 {
+                self.submenu_index -= 1;
+            } else {
+                self.submenu_index = count - 1;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.submenu_index + 1 < count {
-                    self.submenu_index += 1;
-                } else {
-                    self.submenu_index = 0;
-                }
+        } else if self.config.keybindings.is_down(&key) {
+            if self.submenu_index + 1 < count {
+                self.submenu_index += 1;
+            } else {
+                self.submenu_index = 0;
             }
-            KeyCode::Esc => {
-                self.screen = Screen::TopMenu;
-            }
-            KeyCode::Enter => {
-                self.trigger_sub_menu_item(kind, self.submenu_index);
-            }
-            _ => {}
+        } else if self.config.keybindings.is_back(&key) {
+            self.screen = Screen::TopMenu;
+        } else if self.config.keybindings.is_quit(&key) {
+            self.should_quit = true;
+        } else if self.config.keybindings.is_select(&key) {
+            self.trigger_sub_menu_item(kind, self.submenu_index);
         }
     }
 
@@ -652,28 +648,26 @@ impl App {
 
     fn handle_confirm_key(&mut self, key: KeyEvent) {
         let (on_confirm, return_screen) = if let Screen::Confirm(ref mut state) = self.screen {
-            match key.code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Tab
-                | KeyCode::Char('h')
-                | KeyCode::Char('l') => {
-                    state.selected_button = 1 - state.selected_button;
-                    return;
-                }
-                KeyCode::Esc => {
+            if key.code == KeyCode::Left
+                || key.code == KeyCode::Right
+                || key.code == KeyCode::Tab
+                || key.code == KeyCode::Char('h')
+                || key.code == KeyCode::Char('l')
+            {
+                state.selected_button = 1 - state.selected_button;
+                return;
+            } else if self.config.keybindings.is_back(&key) {
+                self.screen = *state.return_screen.clone();
+                return;
+            } else if self.config.keybindings.is_select(&key) {
+                if state.selected_button == 1 {
+                    // Cancelled
                     self.screen = *state.return_screen.clone();
                     return;
                 }
-                KeyCode::Enter => {
-                    if state.selected_button == 1 {
-                        // Cancelled
-                        self.screen = *state.return_screen.clone();
-                        return;
-                    }
-                    (state.on_confirm.clone(), state.return_screen.clone())
-                }
-                _ => return,
+                (state.on_confirm.clone(), state.return_screen.clone())
+            } else {
+                return;
             }
         } else {
             return;
@@ -700,38 +694,30 @@ impl App {
 
     fn handle_input_modal_key(&mut self, key: KeyEvent) {
         if let Screen::InputModal(ref mut state) = self.screen {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                match key.code {
-                    KeyCode::Char('u') => {
-                        state.input.reset();
-                        return;
-                    }
-                    KeyCode::Char('c') => {
-                        let ret = *state.return_screen.clone();
-                        self.screen = ret;
-                        return;
-                    }
-                    _ => {}
-                }
+            if self.config.keybindings.is_clear_input(&key) {
+                state.input.reset();
+                return;
             }
 
-            match key.code {
-                KeyCode::Esc => {
-                    let ret = *state.return_screen.clone();
-                    self.screen = ret;
-                }
-                KeyCode::Enter => {
-                    let msg = if state.input.value().trim().is_empty() {
-                        state.default_text.clone()
-                    } else {
-                        state.input.value().trim().to_string()
-                    };
-                    let flow = state.flow.clone();
-                    self.submit_input(flow, msg);
-                }
-                _ => {
-                    state.input.handle_event(&Event::Key(key));
-                }
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                let ret = *state.return_screen.clone();
+                self.screen = ret;
+                return;
+            }
+
+            if self.config.keybindings.is_back(&key) {
+                let ret = *state.return_screen.clone();
+                self.screen = ret;
+            } else if self.config.keybindings.is_select(&key) {
+                let msg = if state.input.value().trim().is_empty() {
+                    state.default_text.clone()
+                } else {
+                    state.input.value().trim().to_string()
+                };
+                let flow = state.flow.clone();
+                self.submit_input(flow, msg);
+            } else {
+                state.input.handle_event(&Event::Key(key));
             }
         }
     }
@@ -762,70 +748,60 @@ impl App {
                 let filtered = filter_commits(&state.commits, state.input.value());
                 let count = filtered.len();
 
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    match key.code {
-                        KeyCode::Char('u') => {
-                            state.input.reset();
-                            state.selected_index = 0;
-                            return;
-                        }
-                        KeyCode::Char('c') => {
-                            let ret = *state.return_screen.clone();
-                            self.screen = ret;
-                            return;
-                        }
-                        _ => {}
-                    }
+                if self.config.keybindings.is_clear_input(&key) {
+                    state.input.reset();
+                    state.selected_index = 0;
+                    return;
                 }
 
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if state.selected_index > 0 {
-                            state.selected_index -= 1;
-                        } else if count > 0 {
-                            state.selected_index = count - 1;
-                        }
-                        (None, count)
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                    let ret = *state.return_screen.clone();
+                    self.screen = ret;
+                    return;
+                }
+
+                if self.config.keybindings.is_back(&key) {
+                    let ret = *state.return_screen.clone();
+                    self.screen = ret;
+                    return;
+                } else if self.config.keybindings.is_up(&key) {
+                    if state.selected_index > 0 {
+                        state.selected_index -= 1;
+                    } else if count > 0 {
+                        state.selected_index = count - 1;
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if count > 0 && state.selected_index + 1 < count {
-                            state.selected_index += 1;
-                        } else {
-                            state.selected_index = 0;
-                        }
-                        (None, count)
-                    }
-                    KeyCode::Esc => {
-                        let ret = *state.return_screen.clone();
-                        self.screen = ret;
-                        return;
-                    }
-                    KeyCode::Enter => {
-                        if count == 0 {
-                            (None, 0)
-                        } else {
-                            let (ref commit_str, _) = filtered[state.selected_index];
-                            let hash = commit_str
-                                .split([' ', '│'])
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .to_string();
-                            (
-                                Some((
-                                    state.flow.clone(),
-                                    hash,
-                                    Box::new(*state.return_screen.clone()),
-                                )),
-                                count,
-                            )
-                        }
-                    }
-                    _ => {
-                        state.input.handle_event(&Event::Key(key));
+                    (None, count)
+                } else if self.config.keybindings.is_down(&key) {
+                    if count > 0 && state.selected_index + 1 < count {
+                        state.selected_index += 1;
+                    } else {
                         state.selected_index = 0;
-                        (None, count)
                     }
+                    (None, count)
+                } else if self.config.keybindings.is_select(&key) {
+                    if count == 0 {
+                        (None, 0)
+                    } else {
+                        let (ref commit_str, _) = filtered[state.selected_index];
+                        let hash = commit_str
+                            .split([' ', '│'])
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        (
+                            Some((
+                                state.flow.clone(),
+                                hash,
+                                Box::new(*state.return_screen.clone()),
+                            )),
+                            count,
+                        )
+                    }
+                } else {
+                    state.input.handle_event(&Event::Key(key));
+                    state.selected_index = 0;
+                    (None, count)
                 }
             } else {
                 return;
@@ -835,7 +811,7 @@ impl App {
             if !hash.is_empty() {
                 self.submit_commit_filter(flow, hash, ret);
             }
-        } else if filtered_count == 0 && key.code == KeyCode::Enter {
+        } else if filtered_count == 0 && self.config.keybindings.is_select(&key) {
             // No action on enter when empty
         }
     }
@@ -898,51 +874,48 @@ impl App {
     fn handle_pager_key(&mut self, key: KeyEvent) {
         if let Screen::Pager(ref mut state) = self.screen {
             let total = state.lines.len();
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if state.scroll_offset > 0 {
-                        state.scroll_offset -= 1;
-                    }
+            if self.config.keybindings.is_up(&key) {
+                if state.scroll_offset > 0 {
+                    state.scroll_offset -= 1;
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if state.scroll_offset + 1 < total {
-                        state.scroll_offset += 1;
-                    }
+            } else if self.config.keybindings.is_down(&key) {
+                if state.scroll_offset + 1 < total {
+                    state.scroll_offset += 1;
                 }
-                KeyCode::PageUp => {
-                    state.scroll_offset = state.scroll_offset.saturating_sub(10);
+            } else if self.config.keybindings.is_page_up(&key) {
+                state.scroll_offset = state.scroll_offset.saturating_sub(10);
+            } else if self.config.keybindings.is_page_down(&key) {
+                if state.scroll_offset + 10 < total {
+                    state.scroll_offset += 10;
+                } else if total > 0 {
+                    state.scroll_offset = total - 1;
                 }
-                KeyCode::PageDown => {
-                    if state.scroll_offset + 10 < total {
-                        state.scroll_offset += 10;
-                    } else if total > 0 {
-                        state.scroll_offset = total - 1;
-                    }
+            } else if self.config.keybindings.is_home(&key) {
+                state.scroll_offset = 0;
+            } else if self.config.keybindings.is_end(&key) {
+                if total > 0 {
+                    state.scroll_offset = total - 1;
                 }
-                KeyCode::Home => {
-                    state.scroll_offset = 0;
-                }
-                KeyCode::End => {
-                    if total > 0 {
-                        state.scroll_offset = total - 1;
-                    }
-                }
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
-                    let ret = *state.return_screen.clone();
-                    self.screen = ret;
-                }
-                _ => {}
+            } else if self.config.keybindings.is_back(&key)
+                || self.config.keybindings.is_quit(&key)
+                || self.config.keybindings.is_select(&key)
+            {
+                let ret = *state.return_screen.clone();
+                self.screen = ret;
             }
         }
     }
 
     fn handle_result_key(&mut self, key: KeyEvent) {
         let return_screen = if let Screen::Result(ref state) = self.screen {
-            match key.code {
-                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char(' ') => {
-                    Some(*state.return_screen.clone())
-                }
-                _ => None,
+            if self.config.keybindings.is_select(&key)
+                || self.config.keybindings.is_back(&key)
+                || self.config.keybindings.is_quit(&key)
+                || key.code == KeyCode::Char(' ')
+            {
+                Some(*state.return_screen.clone())
+            } else {
+                None
             }
         } else {
             None
@@ -1043,5 +1016,18 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(app.screen, Screen::TopMenu));
         assert!(matches!(app.pending_external_task, ExternalTask::None));
+    }
+
+    #[test]
+    fn test_app_keybindings_custom() {
+        let mut app = App::new();
+        app.config.keybindings.down = vec!["s".to_string()];
+        app.config.keybindings.up = vec!["w".to_string()];
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(app.top_menu_index, 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(app.top_menu_index, 0);
     }
 }
