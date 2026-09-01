@@ -17,7 +17,7 @@ use crate::ui::{
     filter::{FilterParams, render_filter},
     header::{centered_rect, render_header},
     input_modal::render_input_modal,
-    menu::render_menu,
+    menu::{MenuParams, render_menu},
     pager::render_pager,
     result::render_result,
 };
@@ -226,17 +226,16 @@ impl App {
                     item3.as_str(),
                 ];
 
-                render_menu(
-                    frame,
-                    chunks[2],
-                    "Select an action",
-                    &items,
-                    self.top_menu_index,
-                    self.config.keybindings.enable_quick_digits,
-                    &self.theme,
-                );
+                let menu_params = MenuParams {
+                    header_title: "Select an action",
+                    items: &items,
+                    selected_index: self.top_menu_index,
+                    show_numbers: self.config.keybindings.enable_quick_digits,
+                    back_item_key: &self.config.keybindings.back_item_key,
+                };
+                render_menu(frame, chunks[2], &menu_params, &self.theme);
 
-                let hint = self.config.keybindings.menu_hint(items.len());
+                let hint = self.config.keybindings.menu_hint(items.len(), true);
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
                     .style(Style::default().fg(self.theme.faint_hint));
@@ -293,17 +292,16 @@ impl App {
                 ])
                 .split(centered);
 
-                render_menu(
-                    frame,
-                    chunks[0],
-                    title,
-                    &item_refs,
-                    self.submenu_index,
-                    self.config.keybindings.enable_quick_digits,
-                    &self.theme,
-                );
+                let menu_params = MenuParams {
+                    header_title: title,
+                    items: &item_refs,
+                    selected_index: self.submenu_index,
+                    show_numbers: self.config.keybindings.enable_quick_digits,
+                    back_item_key: &self.config.keybindings.back_item_key,
+                };
+                render_menu(frame, chunks[0], &menu_params, &self.theme);
 
-                let hint = self.config.keybindings.menu_hint(items.len());
+                let hint = self.config.keybindings.menu_hint(items.len(), false);
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
                     .style(Style::default().fg(self.theme.faint_hint));
@@ -400,9 +398,15 @@ impl App {
     }
 
     fn handle_top_menu_key(&mut self, key: KeyEvent) {
-        // Quick digit selection
+        // Direct key shortcut for the Back / Exit item (e.g. 'q')
+        if self.config.keybindings.is_back_item_key(&key) {
+            self.should_quit = true;
+            return;
+        }
+
+        // Quick digit selection for actions (items 0, 1, 2)
         if let Some(digit_idx) = self.config.keybindings.get_digit_index(&key)
-            && digit_idx < 4
+            && digit_idx < 3
         {
             self.top_menu_index = digit_idx;
             self.trigger_top_menu_item(digit_idx);
@@ -461,15 +465,22 @@ impl App {
     }
 
     fn handle_sub_menu_key(&mut self, kind: SubMenuKind, key: KeyEvent) {
-        let count = match kind {
+        let count: usize = match kind {
             SubMenuKind::Updates => 5,
             SubMenuKind::Maintenance => 3,
             SubMenuKind::GitHistory => 5,
         };
 
-        // Quick digit selection
+        // Direct key shortcut for the Back item (e.g. 'q')
+        if self.config.keybindings.is_back_item_key(&key) {
+            self.screen = Screen::TopMenu;
+            return;
+        }
+
+        // Quick digit selection for actions (excluding the last Back item)
+        let action_count = count.saturating_sub(1);
         if let Some(digit_idx) = self.config.keybindings.get_digit_index(&key)
-            && digit_idx < count
+            && digit_idx < action_count
         {
             self.submenu_index = digit_idx;
             self.trigger_sub_menu_item(kind, digit_idx);
@@ -1135,13 +1146,14 @@ mod tests {
     fn test_app_digit_quick_selection() {
         let mut app = App::new();
         app.config.keybindings.enable_quick_digits = true;
+        app.config.keybindings.back_item_key = "q".to_string();
 
         // Press '1' on top menu -> opens Updates submenu
         app.handle_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
         assert!(matches!(app.screen, Screen::SubMenu(SubMenuKind::Updates)));
 
-        // Press '5' on Updates submenu -> Back to top menu
-        app.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
+        // Press 'q' on Updates submenu -> Back to top menu
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(matches!(app.screen, Screen::TopMenu));
 
         // Press '2' on top menu -> opens Maintenance submenu
@@ -1150,5 +1162,13 @@ mod tests {
             app.screen,
             Screen::SubMenu(SubMenuKind::Maintenance)
         ));
+
+        // Press 'q' on Maintenance submenu -> Back to top menu
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::TopMenu));
+
+        // Press 'q' on Top menu -> should_quit
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit);
     }
 }

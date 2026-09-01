@@ -113,6 +113,9 @@ pub struct KeybindingsConfig {
     #[serde(default = "default_enable_quick_digits")]
     pub enable_quick_digits: bool,
 
+    #[serde(default = "default_back_item_key")]
+    pub back_item_key: String,
+
     #[serde(default = "default_up")]
     pub up: Vec<String>,
 
@@ -146,6 +149,10 @@ pub struct KeybindingsConfig {
 
 fn default_enable_quick_digits() -> bool {
     true
+}
+
+fn default_back_item_key() -> String {
+    "q".to_string()
 }
 
 fn default_up() -> Vec<String> {
@@ -192,6 +199,7 @@ impl Default for KeybindingsConfig {
     fn default() -> Self {
         Self {
             enable_quick_digits: default_enable_quick_digits(),
+            back_item_key: default_back_item_key(),
             up: default_up(),
             down: default_down(),
             page_up: default_page_up(),
@@ -247,6 +255,13 @@ impl KeybindingsConfig {
         self.clear_input.iter().any(|k| matches_key(key, k))
     }
 
+    pub fn is_back_item_key(&self, key: &KeyEvent) -> bool {
+        if self.back_item_key.trim().is_empty() {
+            return false;
+        }
+        matches_key(key, &self.back_item_key)
+    }
+
     /// If quick digits are enabled and the pressed key is a digit '1'-'9', returns the 0-based index.
     pub fn get_digit_index(&self, key: &KeyEvent) -> Option<usize> {
         if !self.enable_quick_digits {
@@ -271,13 +286,27 @@ impl KeybindingsConfig {
         format!("[{up_s}/{down_s}] Navigate")
     }
 
-    pub fn menu_hint(&self, count: usize) -> String {
+    pub fn menu_hint(&self, count: usize, is_top_menu: bool) -> String {
         let nav = self.nav_hint();
         let sel = format_keys_display(&self.select);
-        if self.enable_quick_digits && count > 0 {
-            format!("[1-{count}] Quick select  •  {nav}  •  [{sel}] Select")
+        let back_lbl = if is_top_menu { "Exit" } else { "Back" };
+        let back_hint = if !self.back_item_key.trim().is_empty() {
+            format!("[{}] {back_lbl}", self.back_item_key.trim())
         } else {
-            format!("{nav}  •  [{sel}] Select")
+            format!("[{}] {back_lbl}", format_keys_display(&self.back))
+        };
+
+        let action_count = count.saturating_sub(1);
+        if self.enable_quick_digits && action_count > 0 {
+            if action_count == 1 {
+                format!("[1] Select  •  {back_hint}  •  {nav}  •  [{sel}] Select")
+            } else {
+                format!(
+                    "[1-{action_count}] Quick select  •  {back_hint}  •  {nav}  •  [{sel}] Select"
+                )
+            }
+        } else {
+            format!("{back_hint}  •  {nav}  •  [{sel}] Select")
         }
     }
 
@@ -479,6 +508,9 @@ trim_history = "trim history to {hash}"
 # Enable instant single-digit selection (1, 2, 3...) for menu items
 enable_quick_digits = true
 
+# Key assigned to the Back / Exit menu item (e.g. "q", "b", "Esc")
+back_item_key = "q"
+
 # Navigation keys
 up = ["Up", "k"]
 down = ["Down", "j"]
@@ -570,6 +602,7 @@ mod tests {
 
             [keybindings]
             enable_quick_digits = true
+            back_item_key = "q"
             up = ["Up", "w"]
             down = ["Down", "s"]
         "#;
@@ -579,6 +612,7 @@ mod tests {
         assert_eq!(cfg.theme.palette, "nord");
         assert_eq!(cfg.commit_templates.rebuild, "chore: rebuild system");
         assert!(cfg.keybindings.enable_quick_digits);
+        assert_eq!(cfg.keybindings.back_item_key, "q");
         assert_eq!(cfg.keybindings.up, vec!["Up", "w"]);
         assert_eq!(cfg.keybindings.down, vec!["Down", "s"]);
         assert_eq!(cfg.keybindings.select, vec!["Enter"]);
@@ -604,26 +638,31 @@ mod tests {
             up: vec!["w".to_string()],
             down: vec!["s".to_string()],
             select: vec!["Space".to_string()],
-            back: vec!["q".to_string()],
+            back: vec!["Esc".to_string()],
+            back_item_key: "q".to_string(),
             ..Default::default()
         };
 
         assert_eq!(kb.nav_hint(), "[w/s] Navigate");
         assert_eq!(
-            kb.menu_hint(4),
-            "[1-4] Quick select  •  [w/s] Navigate  •  [Space] Select"
+            kb.menu_hint(4, true),
+            "[1-3] Quick select  •  [q] Exit  •  [w/s] Navigate  •  [Space] Select"
+        );
+        assert_eq!(
+            kb.menu_hint(5, false),
+            "[1-4] Quick select  •  [q] Back  •  [w/s] Navigate  •  [Space] Select"
         );
         assert_eq!(
             kb.confirm_hint(),
-            "Use [←/→/Tab] to toggle  •  [Space] Confirm  •  [q] Cancel"
+            "Use [←/→/Tab] to toggle  •  [Space] Confirm  •  [Esc] Cancel"
         );
         assert_eq!(
             kb.input_modal_hint(),
-            "Press [Space] to confirm (or use default)  •  [q] Cancel"
+            "Press [Space] to confirm (or use default)  •  [Esc] Cancel"
         );
         assert_eq!(
             kb.filter_hint(),
-            "Type to filter • [w/s] Navigate • [Space] Select • [q] Cancel"
+            "Type to filter • [w/s] Navigate • [Space] Select • [Esc] Cancel"
         );
     }
 }

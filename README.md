@@ -182,6 +182,9 @@ trim_history = "trim history to {hash}"
 # Enable instant single-digit selection (1, 2, 3...) for menu items
 enable_quick_digits = true
 
+# Key assigned to the Back / Exit menu item (e.g. "q", "b", "Esc")
+back_item_key = "q"
+
 # Navigation keys
 up = ["Up", "k"]
 down = ["Down", "j"]
