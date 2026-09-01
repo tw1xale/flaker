@@ -475,7 +475,7 @@ flake_target = ""
 
 [theme]
 # Color palette. Available options:
-# "mocha" (default dark), "macchiato", "frappe", "latte" (light),
+# "mocha" (default), "macchiato", "frappe", "latte",
 # "nord", "tokyonight", "dracula", "gruvbox"
 palette = "mocha"
 
