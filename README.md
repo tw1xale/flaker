@@ -23,7 +23,7 @@
 ## ⚡ Highlights
 
 - 🔨 **Instant NixOS Operations**: Rebuild & switch, update lockfile, full cycle update, and verification builds with single keystrokes.
-- 📜 **Built-in Git Management**: Interactive commit history, live syntax-highlighted diffs, soft revert, hard reset, and history squashing.
+- 📜 **Built-in Git Management**: Interactive commit history with side-by-side diff/stat preview pane, live syntax-highlighted diffs, soft revert, hard reset, and history squashing.
 - 🎨 **Adaptive Theming**: 8 built-in palettes (**Catppuccin** Mocha/Macchiato/Frappé/Latte, **Nord**, **Tokyo Night**, **Dracula**, **Gruvbox**) + custom HEX color overrides.
 - ⌨️ **Ergonomic Controls**: Instant single-digit selection (`1`, `2`, `3`...), fixed `q` shortcut for Back/Exit, and full key rebinding via `config.toml`.
 - 🛡️ **Safe & Intelligent**: Destructive actions require modal confirmation; non-root user configurations run cleanly without unnecessary `sudo`.
@@ -132,9 +132,9 @@ All system administration actions are categorized into clean submenus:
 
 ### 📜 Git & History
 - **Show Working Changes (Git Diff)**: Integrated scrollable diff viewer with syntax highlighting (green for additions, red for deletions, mauve for hunk headers).
-- **Hard Reset Rollback (`git reset --hard`)**: Interactive commit selector → safety warning modal → hard reset → force push → switch system. *Requires confirmation.*
-- **Soft Revert Rollback (`git checkout <hash> -- .`)**: Interactive commit selector → restores tree state → records a new commit → pushes and switches system.
-- **Trim History (`git reset --soft`)**: Interactive commit selector → squashes commit history back to target commit while preserving working tree files → force push. *Requires confirmation.*
+- **Hard Reset Rollback (`git reset --hard`)**: Interactive commit selector with live side-by-side diff preview → safety warning modal → hard reset → force push → switch system. *Requires confirmation.*
+- **Soft Revert Rollback (`git checkout <hash> -- .`)**: Interactive commit selector with live side-by-side diff preview → restores tree state → records a new commit → pushes and switches system.
+- **Trim History (`git reset --soft`)**: Interactive commit selector with live side-by-side diff preview → squashes commit history back to target commit while preserving working tree files → force push. *Requires confirmation.*
 
 ---
 
