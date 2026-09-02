@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -437,6 +437,90 @@ impl App {
             ScreenTag::CommitFilter => self.handle_commit_filter_key(key),
             ScreenTag::Pager => self.handle_pager_key(key),
             ScreenTag::Result => self.handle_result_key(key),
+        }
+    }
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent, term_width: u16) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => match self.screen.tag() {
+                ScreenTag::CommitFilter => {
+                    let mut should_update = false;
+                    if let Screen::CommitFilter(ref mut state) = self.screen {
+                        let is_wide = term_width >= 96;
+                        let split_x = term_width / 2;
+                        if is_wide && mouse.column >= split_x {
+                            state.preview_scroll = state.preview_scroll.saturating_sub(1);
+                        } else if state.selected_index > 0 {
+                            state.selected_index -= 1;
+                            should_update = true;
+                        }
+                    }
+                    if should_update {
+                        self.update_commit_preview();
+                    }
+                }
+                ScreenTag::Pager => {
+                    if let Screen::Pager(ref mut state) = self.screen {
+                        state.scroll_offset = state.scroll_offset.saturating_sub(1);
+                    }
+                }
+                ScreenTag::TopMenu if self.top_menu_index > 0 => {
+                    self.top_menu_index -= 1;
+                }
+                ScreenTag::SubMenu(_) if self.submenu_index > 0 => {
+                    self.submenu_index -= 1;
+                }
+                _ => {}
+            },
+            MouseEventKind::ScrollDown => match self.screen.tag() {
+                ScreenTag::CommitFilter => {
+                    let mut should_update = false;
+                    if let Screen::CommitFilter(ref mut state) = self.screen {
+                        let is_wide = term_width >= 96;
+                        let split_x = term_width / 2;
+                        if is_wide && mouse.column >= split_x {
+                            let total = state.preview_lines.len();
+                            state.preview_scroll =
+                                (state.preview_scroll + 1).min(total.saturating_sub(1));
+                        } else {
+                            let filtered = filter_commits(&state.commits, state.input.value());
+                            let count = filtered.len();
+                            if count > 0 && state.selected_index + 1 < count {
+                                state.selected_index += 1;
+                                should_update = true;
+                            }
+                        }
+                    }
+                    if should_update {
+                        self.update_commit_preview();
+                    }
+                }
+                ScreenTag::Pager => {
+                    if let Screen::Pager(ref mut state) = self.screen {
+                        let total = state.lines.len();
+                        state.scroll_offset =
+                            (state.scroll_offset + 1).min(total.saturating_sub(1));
+                    }
+                }
+                ScreenTag::TopMenu if self.top_menu_index + 1 < 4 => {
+                    self.top_menu_index += 1;
+                }
+                ScreenTag::SubMenu(kind)
+                    if self.submenu_index + 1 < self.submenu_item_count(kind) =>
+                {
+                    self.submenu_index += 1;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    pub fn submenu_item_count(&self, kind: SubMenuKind) -> usize {
+        match kind {
+            SubMenuKind::Updates => 5,
+            SubMenuKind::Maintenance => 3,
+            SubMenuKind::GitHistory => 5,
         }
     }
 
@@ -1294,6 +1378,99 @@ mod tests {
             assert_eq!(state.preview_scroll, 0);
         } else {
             panic!("Expected CommitFilter screen");
+        }
+    }
+
+    #[test]
+    fn test_commit_filter_mouse_scroll_commits() {
+        let mut app = App::new();
+        app.screen = Screen::CommitFilter(CommitFilterState {
+            header_title: "Test header".to_string(),
+            flow: FilterFlow::HardReset,
+            commits: vec![
+                "1234567 │ 1 hour ago │ Initial commit".to_string(),
+                "abcdef0 │ 2 hours ago │ Second commit".to_string(),
+                "7654321 │ 3 hours ago │ Third commit".to_string(),
+            ],
+            input: Input::default(),
+            selected_index: 0,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_hash: "1234567".to_string(),
+            preview_lines: vec!["diff line".to_string()],
+            preview_scroll: 0,
+        });
+
+        // Mouse scroll down over the left pane (column 20) moves by exactly 1 commit
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 20,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            120,
+        );
+        if let Screen::CommitFilter(ref state) = app.screen {
+            assert_eq!(state.selected_index, 1);
+        }
+
+        // Another scroll down moves by 1 again
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 20,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            120,
+        );
+        if let Screen::CommitFilter(ref state) = app.screen {
+            assert_eq!(state.selected_index, 2);
+        }
+
+        // Scroll up moves back by 1 commit
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 20,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            120,
+        );
+        if let Screen::CommitFilter(ref state) = app.screen {
+            assert_eq!(state.selected_index, 1);
+        }
+    }
+
+    #[test]
+    fn test_commit_filter_mouse_scroll_preview() {
+        let mut app = App::new();
+        app.screen = Screen::CommitFilter(CommitFilterState {
+            header_title: "Test header".to_string(),
+            flow: FilterFlow::HardReset,
+            commits: vec!["1234567 │ 1 hour ago │ Initial commit".to_string()],
+            input: Input::default(),
+            selected_index: 0,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_hash: "1234567".to_string(),
+            preview_lines: (0..50).map(|i| format!("diff line {i}")).collect(),
+            preview_scroll: 0,
+        });
+
+        // Mouse scroll down over the right pane (column 80 in 120-wide terminal) scrolls diff preview
+        app.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 80,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            },
+            120,
+        );
+        if let Screen::CommitFilter(ref state) = app.screen {
+            assert_eq!(state.preview_scroll, 1);
+            assert_eq!(state.selected_index, 0);
         }
     }
 }
