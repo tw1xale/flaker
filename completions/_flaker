@@ -1,0 +1,5 @@
+#compdef flaker
+
+_arguments \
+    '(-h --help)'{-h,--help}'[Print help information]' \
+    '(-V --version)'{-V,--version}'[Print version information]'

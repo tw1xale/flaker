@@ -18,6 +18,28 @@ use std::io::{self, stdout};
 use std::time::Duration;
 
 fn main() -> Result<()> {
+    // Handle simple CLI flags before entering raw mode
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "-h" | "--help" => {
+                println!("flaker {}", env!("CARGO_PKG_VERSION"));
+                println!("Interactive TUI manager for NixOS Flakes\n");
+                println!("USAGE:");
+                println!("    flaker [OPTIONS]\n");
+                println!("OPTIONS:");
+                println!("    -h, --help       Print help information");
+                println!("    -V, --version    Print version information");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("flaker {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     // Ensure terminal is restored on panic
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

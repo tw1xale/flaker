@@ -28,6 +28,18 @@
             lockFile = ./Cargo.lock;
           };
 
+          nativeBuildInputs = [
+            pkgs.installShellFiles
+          ];
+
+          postInstall = ''
+            installManPage man/flaker.1
+            installShellCompletion --cmd flaker \
+              --bash completions/flaker.bash \
+              --fish completions/flaker.fish \
+              --zsh completions/_flaker
+          '';
+
           meta = with pkgs.lib; {
             description = "Interactive TUI manager for NixOS Flakes";
             homepage = "https://github.com/tw1xale/flaker";
