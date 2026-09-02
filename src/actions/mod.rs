@@ -254,7 +254,12 @@ impl TerminalSuspender {
     pub fn suspend() -> Result<Self> {
         disable_raw_mode().context("Failed to disable raw mode before running command")?;
         let mut out = stdout();
-        let _ = execute!(out, LeaveAlternateScreen, Show);
+        let _ = execute!(
+            out,
+            LeaveAlternateScreen,
+            Show,
+            crossterm::event::DisableMouseCapture
+        );
         Ok(Self { active: true })
     }
 
@@ -262,7 +267,12 @@ impl TerminalSuspender {
         if self.active {
             self.active = false;
             let mut out = stdout();
-            let _ = execute!(out, EnterAlternateScreen, Hide);
+            let _ = execute!(
+                out,
+                EnterAlternateScreen,
+                Hide,
+                crossterm::event::EnableMouseCapture
+            );
             let _ = enable_raw_mode();
             flush_stdin_events();
         }
