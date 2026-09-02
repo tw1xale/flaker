@@ -37,7 +37,7 @@ pub fn nixos_rebuild_switch(flake_target: &str, dir: &Path) -> Result<()> {
     }
 }
 
-/// Runs a dry-run test build of the NixOS configuration.
+/// Runs a test build of the NixOS configuration (builds without activating).
 pub fn nixos_rebuild_build(flake_target: &str, dir: &Path) -> Result<()> {
     let mut cmd = Command::new("sudo");
     cmd.args(["nixos-rebuild", "build", "--flake", flake_target])

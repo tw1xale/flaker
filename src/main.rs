@@ -86,20 +86,30 @@ fn execute_external_task(
     let is_git = app.is_git;
     let needs_sudo = app.needs_sudo;
 
+    /// Try to push; returns an optional warning suffix for the result message.
+    fn try_push(dir: &std::path::Path, needs_sudo: bool, force: bool) -> String {
+        match git::git_push(dir, needs_sudo, force) {
+            Ok(()) => String::new(),
+            Err(err) => format!("\n⚠ Git push failed: {err}"),
+        }
+    }
+
     match task {
         ExternalTask::None => {}
 
         ExternalTask::RebuildSwitchOnly => {
             match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Ok(()) => {
-                    if is_git {
-                        let _ = git::git_push(&flake_dir, needs_sudo, false);
-                    }
+                    let push_warn = if is_git {
+                        try_push(&flake_dir, needs_sudo, false)
+                    } else {
+                        String::new()
+                    };
 
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: "SYSTEM REBUILT SUCCESSFULLY".to_string(),
-                        message: "System successfully rebuilt and activated".to_string(),
+                        message: format!("System successfully rebuilt and activated{push_warn}"),
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                     });
                 }
@@ -133,14 +143,18 @@ fn execute_external_task(
             } else {
                 match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                     Ok(()) => {
-                        if is_git {
-                            let _ = git::git_push(&flake_dir, needs_sudo, false);
-                        }
+                        let push_warn = if is_git {
+                            try_push(&flake_dir, needs_sudo, false)
+                        } else {
+                            String::new()
+                        };
 
                         app.screen = Screen::Result(ResultState {
                             is_success: true,
                             title: "SYSTEM REBUILT SUCCESSFULLY".to_string(),
-                            message: "System successfully rebuilt and activated".to_string(),
+                            message: format!(
+                                "System successfully rebuilt and activated{push_warn}"
+                            ),
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                         });
                     }
@@ -187,12 +201,12 @@ fn execute_external_task(
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                         });
                     } else {
-                        let _ = git::git_push(&flake_dir, needs_sudo, false);
+                        let push_warn = try_push(&flake_dir, needs_sudo, false);
 
                         app.screen = Screen::Result(ResultState {
                             is_success: true,
                             title: "FLAKE LOCKFILE UP TO DATE".to_string(),
-                            message: "flake.lock is already up to date and pushed".to_string(),
+                            message: format!("flake.lock is already up to date{push_warn}"),
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                         });
                     }
@@ -288,16 +302,18 @@ fn execute_external_task(
                             });
                         }
                         Ok(()) => {
-                            if is_git {
-                                let _ = git::git_push(&flake_dir, needs_sudo, false);
-                            }
+                            let push_warn = if is_git {
+                                try_push(&flake_dir, needs_sudo, false)
+                            } else {
+                                String::new()
+                            };
 
                             app.screen = Screen::Result(ResultState {
                                 is_success: true,
                                 title: "FULL UPDATE CYCLE COMPLETED".to_string(),
-                                message:
-                                    "System successfully updated to latest package versions and activated"
-                                        .to_string(),
+                                message: format!(
+                                    "System successfully updated to latest package versions and activated{push_warn}"
+                                ),
                                 return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                             });
                         }
@@ -325,16 +341,18 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    if is_git {
-                        let _ = git::git_push(&flake_dir, needs_sudo, false);
-                    }
+                    let push_warn = if is_git {
+                        try_push(&flake_dir, needs_sudo, false)
+                    } else {
+                        String::new()
+                    };
 
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: "FULL UPDATE CYCLE COMPLETED".to_string(),
-                        message:
-                            "System successfully updated to latest package versions and activated"
-                                .to_string(),
+                        message: format!(
+                            "System successfully updated to latest package versions and activated{push_warn}"
+                        ),
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                     });
                 }

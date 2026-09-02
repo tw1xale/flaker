@@ -6,7 +6,7 @@ license = "MIT"
 description = "Interactive TUI manager for NixOS Flakes"
 repository = "https://github.com/tw1xale/flaker"
 readme = "README.md"
-keywords = ["nixos", "nix", "tui", "ratatui", "catppuccin"]
+keywords = ["nixos", "nix", "flake", "tui", "ratatui"]
 categories = ["command-line-utilities"]
 
 [[bin]]

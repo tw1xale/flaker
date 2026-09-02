@@ -454,10 +454,22 @@ pub fn load_config() -> Config {
 
     if let Some(ref path) = config_path {
         if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(cfg) = toml::from_str::<Config>(&content)
-            {
-                return cfg;
+            match std::fs::read_to_string(path) {
+                Ok(content) => match toml::from_str::<Config>(&content) {
+                    Ok(cfg) => return cfg,
+                    Err(err) => {
+                        eprintln!(
+                            "⚠ Warning: Failed to parse {}: {err}\n  Using default configuration.",
+                            path.display()
+                        );
+                    }
+                },
+                Err(err) => {
+                    eprintln!(
+                        "⚠ Warning: Cannot read {}: {err}\n  Using default configuration.",
+                        path.display()
+                    );
+                }
             }
         } else {
             // Automatically generate a default commented configuration file on first run
