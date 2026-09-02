@@ -316,7 +316,9 @@ impl KeybindingsConfig {
     pub fn filter_hint(&self) -> String {
         let sel = format_keys_display(&self.select);
         let b = format_keys_display(&self.back);
-        format!("Type to filter • [↑/↓] Navigate • [{sel}] Select • [{b}] Cancel")
+        format!(
+            "Type to filter  •  [↑/↓] Commits  •  [PgUp/PgDn] Diff  •  [{sel}] Select  •  [{b}] Cancel"
+        )
     }
 
     pub fn pager_hint(&self, current: usize, total: usize) -> String {
@@ -663,7 +665,7 @@ mod tests {
         );
         assert_eq!(
             kb.filter_hint(),
-            "Type to filter • [↑/↓] Navigate • [Space] Select • [Esc] Cancel"
+            "Type to filter  •  [↑/↓] Commits  •  [PgUp/PgDn] Diff  •  [Space] Select  •  [Esc] Cancel"
         );
     }
 }
