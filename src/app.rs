@@ -1007,17 +1007,13 @@ impl App {
             } else if self.config.keybindings.is_page_up(&key) {
                 state.scroll_offset = state.scroll_offset.saturating_sub(10);
             } else if self.config.keybindings.is_page_down(&key) {
-                if state.scroll_offset + 10 < total {
-                    state.scroll_offset += 10;
-                } else if total > 0 {
-                    state.scroll_offset = total - 1;
-                }
+                state.scroll_offset = (state.scroll_offset + 10).min(total.saturating_sub(1));
             } else if self.config.keybindings.is_home(&key) {
                 state.scroll_offset = 0;
             } else if self.config.keybindings.is_end(&key) {
-                if total > 0 {
-                    state.scroll_offset = total - 1;
-                }
+                // Scroll to show the last lines; exact visible_height is
+                // computed at render time, so use a reasonable estimate.
+                state.scroll_offset = total.saturating_sub(1);
             } else if self.config.keybindings.is_back(&key)
                 || self.config.keybindings.is_quit(&key)
                 || self.config.keybindings.is_select(&key)
