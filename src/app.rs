@@ -81,6 +81,9 @@ pub struct CommitFilterState {
     pub input: Input,
     pub selected_index: usize,
     pub return_screen: Box<Screen>,
+    pub preview_hash: String,
+    pub preview_lines: Vec<String>,
+    pub preview_scroll: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +102,17 @@ pub struct ResultState {
     pub return_screen: Box<Screen>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenTag {
+    TopMenu,
+    SubMenu(SubMenuKind),
+    Confirm,
+    InputModal,
+    CommitFilter,
+    Pager,
+    Result,
+}
+
 #[derive(Debug, Clone)]
 pub enum Screen {
     TopMenu,
@@ -108,6 +122,20 @@ pub enum Screen {
     CommitFilter(CommitFilterState),
     Pager(PagerState),
     Result(ResultState),
+}
+
+impl Screen {
+    pub fn tag(&self) -> ScreenTag {
+        match self {
+            Screen::TopMenu => ScreenTag::TopMenu,
+            Screen::SubMenu(kind) => ScreenTag::SubMenu(*kind),
+            Screen::Confirm(_) => ScreenTag::Confirm,
+            Screen::InputModal(_) => ScreenTag::InputModal,
+            Screen::CommitFilter(_) => ScreenTag::CommitFilter,
+            Screen::Pager(_) => ScreenTag::Pager,
+            Screen::Result(_) => ScreenTag::Result,
+        }
+    }
 }
 
 /// Request to run a command outside the raw alternate screen.
@@ -361,6 +389,9 @@ impl App {
                     filtered_items: &filtered_refs,
                     selected_index: state.selected_index,
                     hint: &hint,
+                    preview_hash: &state.preview_hash,
+                    preview_lines: &state.preview_lines,
+                    preview_scroll: state.preview_scroll,
                 };
 
                 render_filter(frame, area, &params, &self.theme);
@@ -398,14 +429,14 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
-        match self.screen.clone() {
-            Screen::TopMenu => self.handle_top_menu_key(key),
-            Screen::SubMenu(kind) => self.handle_sub_menu_key(kind, key),
-            Screen::Confirm(_) => self.handle_confirm_key(key),
-            Screen::InputModal(_) => self.handle_input_modal_key(key),
-            Screen::CommitFilter(_) => self.handle_commit_filter_key(key),
-            Screen::Pager(_) => self.handle_pager_key(key),
-            Screen::Result(_) => self.handle_result_key(key),
+        match self.screen.tag() {
+            ScreenTag::TopMenu => self.handle_top_menu_key(key),
+            ScreenTag::SubMenu(kind) => self.handle_sub_menu_key(kind, key),
+            ScreenTag::Confirm => self.handle_confirm_key(key),
+            ScreenTag::InputModal => self.handle_input_modal_key(key),
+            ScreenTag::CommitFilter => self.handle_commit_filter_key(key),
+            ScreenTag::Pager => self.handle_pager_key(key),
+            ScreenTag::Result => self.handle_result_key(key),
         }
     }
 
@@ -671,7 +702,11 @@ impl App {
                     input: Input::default(),
                     selected_index: 0,
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    preview_hash: String::new(),
+                    preview_lines: Vec::new(),
+                    preview_scroll: 0,
                 });
+                self.update_commit_preview();
             }
             Ok(_) => {
                 self.screen = Screen::Result(ResultState {
@@ -704,7 +739,11 @@ impl App {
                     input: Input::default(),
                     selected_index: 0,
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    preview_hash: String::new(),
+                    preview_lines: Vec::new(),
+                    preview_scroll: 0,
                 });
+                self.update_commit_preview();
             }
             Ok(_) => {
                 self.screen = Screen::Result(ResultState {
@@ -737,7 +776,11 @@ impl App {
                     input: Input::default(),
                     selected_index: 0,
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    preview_hash: String::new(),
+                    preview_lines: Vec::new(),
+                    preview_scroll: 0,
                 });
+                self.update_commit_preview();
             }
             Ok(_) => {
                 self.screen = Screen::Result(ResultState {
@@ -859,6 +902,41 @@ impl App {
         }
     }
 
+    pub fn update_commit_preview(&mut self) {
+        if let Screen::CommitFilter(ref mut state) = self.screen {
+            let filtered = filter_commits(&state.commits, state.input.value());
+            let current_hash = if !filtered.is_empty() && state.selected_index < filtered.len() {
+                let (ref commit_str, _) = filtered[state.selected_index];
+                commit_str
+                    .split([' ', '│'])
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            } else {
+                String::new()
+            };
+
+            if current_hash != state.preview_hash {
+                state.preview_hash = current_hash.clone();
+                state.preview_scroll = 0;
+                if !current_hash.is_empty() {
+                    match git::get_commit_diff(&self.flake_dir, &current_hash) {
+                        Ok(diff) => {
+                            state.preview_lines = diff.lines().map(String::from).collect();
+                        }
+                        Err(err) => {
+                            state.preview_lines =
+                                vec![format!("Failed to load commit diff: {err}")];
+                        }
+                    }
+                } else {
+                    state.preview_lines = vec!["No commit selected".to_string()];
+                }
+            }
+        }
+    }
+
     fn handle_commit_filter_key(&mut self, key: KeyEvent) {
         let (action_to_take, filtered_count) =
             if let Screen::CommitFilter(ref mut state) = self.screen {
@@ -868,16 +946,11 @@ impl App {
                 if self.config.keybindings.is_clear_input(&key) {
                     state.input.reset();
                     state.selected_index = 0;
-                    return;
-                }
-
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                    let ret = *state.return_screen.clone();
-                    self.screen = ret;
-                    return;
-                }
-
-                if self.config.keybindings.is_back(&key) {
+                    (None, count)
+                } else if (key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c'))
+                    || self.config.keybindings.is_back(&key)
+                {
                     let ret = *state.return_screen.clone();
                     self.screen = ret;
                     return;
@@ -894,6 +967,13 @@ impl App {
                     } else {
                         state.selected_index = 0;
                     }
+                    (None, count)
+                } else if self.config.keybindings.is_page_up(&key) {
+                    state.preview_scroll = state.preview_scroll.saturating_sub(10);
+                    (None, count)
+                } else if self.config.keybindings.is_page_down(&key) {
+                    let total = state.preview_lines.len();
+                    state.preview_scroll = (state.preview_scroll + 10).min(total.saturating_sub(1));
                     (None, count)
                 } else if self.config.keybindings.is_select(&key) {
                     if count == 0 {
@@ -930,6 +1010,8 @@ impl App {
             }
         } else if filtered_count == 0 && self.config.keybindings.is_select(&key) {
             // No action on enter when empty
+        } else {
+            self.update_commit_preview();
         }
     }
 
@@ -1178,5 +1260,40 @@ mod tests {
         // Press 'q' on Top menu -> should_quit
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_commit_filter_preview_scroll() {
+        let mut app = App::new();
+        app.screen = Screen::CommitFilter(CommitFilterState {
+            header_title: "Test header".to_string(),
+            flow: FilterFlow::HardReset,
+            commits: vec![
+                "1234567 │ 1 hour ago │ Initial commit".to_string(),
+                "abcdef0 │ 2 hours ago │ Second commit".to_string(),
+            ],
+            input: Input::default(),
+            selected_index: 0,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_hash: "1234567".to_string(),
+            preview_lines: (0..50).map(|i| format!("diff line {i}")).collect(),
+            preview_scroll: 0,
+        });
+
+        // PageDown scrolls preview by 10 lines
+        app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        if let Screen::CommitFilter(ref state) = app.screen {
+            assert_eq!(state.preview_scroll, 10);
+        } else {
+            panic!("Expected CommitFilter screen");
+        }
+
+        // PageUp scrolls back
+        app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        if let Screen::CommitFilter(ref state) = app.screen {
+            assert_eq!(state.preview_scroll, 0);
+        } else {
+            panic!("Expected CommitFilter screen");
+        }
     }
 }

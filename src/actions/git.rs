@@ -263,3 +263,21 @@ pub fn git_checkout_files(dir: &Path, needs_sudo: bool, hash: &str) -> Result<()
         anyhow::bail!("git checkout exited with status: {status}");
     }
 }
+
+/// Retrieves commit details, stats and diff patch for a given commit hash (read-only, no sudo).
+pub fn get_commit_diff(dir: &Path, hash: &str) -> Result<String> {
+    if hash.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(["show", "--stat", "--patch", "--color=never", hash])
+        .current_dir(dir);
+
+    let output = run_silent(&mut cmd).context("Failed to execute git show")?;
+    if !output.status.success() {
+        anyhow::bail!("git show exited with status: {}", output.status);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
