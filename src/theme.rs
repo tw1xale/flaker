@@ -299,6 +299,8 @@ pub const ICON_ERROR: &str = "\u{f057}"; //  nf-fa-times_circle
 pub const ICON_WARNING: &str = "\u{f071}"; //  nf-fa-exclamation_triangle
 pub const ICON_COMMIT: &str = "\u{f417}"; //  nf-oct-git_commit
 pub const ICON_SEARCH: &str = "\u{f002}"; //  nf-fa-search
+pub const ICON_FILE: &str = "\u{f15b}"; //  nf-fa-file
+pub const ICON_PATCH: &str = "\u{f044}"; //  nf-fa-pencil_square_o
 
 #[cfg(test)]
 mod tests {

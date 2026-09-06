@@ -281,3 +281,105 @@ pub fn get_commit_diff(dir: &Path, hash: &str) -> Result<String> {
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
+
+/// Retrieves list of modified files in a given commit (read-only, no sudo).
+pub fn get_commit_files(dir: &Path, hash: &str) -> Result<Vec<String>> {
+    if hash.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(["show", "--pretty=", "--name-only", hash])
+        .current_dir(dir);
+
+    let output = run_silent(&mut cmd).context("Failed to list commit files")?;
+    if !output.status.success() {
+        anyhow::bail!("git show --name-only exited with status: {}", output.status);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+
+    Ok(files)
+}
+
+/// Retrieves the diff between current HEAD and the specified commit for a single file (read-only, no sudo).
+pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<String> {
+    if hash.trim().is_empty() || file.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "HEAD", hash, "--", file])
+        .current_dir(dir);
+
+    let output = run_silent(&mut cmd).context("Failed to execute git diff for file")?;
+    if !output.status.success() {
+        anyhow::bail!("git diff exited with status: {}", output.status);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if stdout.trim().is_empty() {
+        Ok(format!(
+            "File '{file}' is identical between HEAD and commit {hash}."
+        ))
+    } else {
+        Ok(stdout)
+    }
+}
+
+/// Restores a single file from a specific commit into the current tree.
+pub fn git_restore_file(dir: &Path, needs_sudo: bool, hash: &str, file: &str) -> Result<()> {
+    let mut cmd = make_cmd("git", dir, needs_sudo);
+    cmd.args(["checkout", hash, "--", file]);
+
+    let prefix = if needs_sudo { "sudo " } else { "" };
+    let status = run_visible(
+        "RESTORING FILE FROM COMMIT",
+        &format!("{prefix}git checkout {hash} -- {file}"),
+        &mut cmd,
+    )
+    .context("Failed to execute git checkout for file")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("git checkout for file exited with status: {status}");
+    }
+}
+
+/// Interactively restores lines/hunks from a commit (optionally for a single file) using git checkout -p.
+pub fn git_restore_patch(
+    dir: &Path,
+    needs_sudo: bool,
+    hash: &str,
+    file: Option<&str>,
+) -> Result<()> {
+    let mut args = vec!["checkout", "-p", hash];
+    if let Some(f) = file {
+        args.extend(["--", f]);
+    }
+
+    let mut cmd = make_cmd("git", dir, needs_sudo);
+    cmd.args(&args);
+
+    let prefix = if needs_sudo { "sudo " } else { "" };
+    let file_suffix = file.map(|f| format!(" -- {f}")).unwrap_or_default();
+    let status = run_visible(
+        "INTERACTIVE PATCH RESTORATION (LINES & HUNKS)",
+        &format!("{prefix}git checkout -p {hash}{file_suffix}"),
+        &mut cmd,
+    )
+    .context("Failed to execute interactive git checkout -p")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("git checkout -p exited with status: {status}");
+    }
+}

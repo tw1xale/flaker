@@ -34,6 +34,7 @@ pub enum FilterFlow {
     HardReset,
     SoftRevert,
     TrimHistory,
+    Restore,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub enum InputFlow {
     FullCycle,
     SoftRevert(String),
     TrimHistory(String),
+    RestoreFile(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,8 @@ pub enum PendingAction {
     CleanStore,
     HardResetExecute(String),
     TrimHistorySoftReset(String),
+    RestoreFileExecute(String, String),
+    RestoreCommitAndSwitch(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +91,18 @@ pub struct CommitFilterState {
 }
 
 #[derive(Debug, Clone)]
+pub struct FileFilterState {
+    pub commit_hash: String,
+    pub files: Vec<String>,
+    pub input: Input,
+    pub selected_index: usize,
+    pub return_screen: Box<Screen>,
+    pub preview_file: String,
+    pub preview_lines: Vec<String>,
+    pub preview_scroll: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct PagerState {
     pub title: String,
     pub lines: Vec<String>,
@@ -109,6 +125,7 @@ pub enum ScreenTag {
     Confirm,
     InputModal,
     CommitFilter,
+    FileFilter,
     Pager,
     Result,
 }
@@ -120,6 +137,7 @@ pub enum Screen {
     Confirm(ConfirmState),
     InputModal(InputModalState),
     CommitFilter(CommitFilterState),
+    FileFilter(FileFilterState),
     Pager(PagerState),
     Result(ResultState),
 }
@@ -132,6 +150,7 @@ impl Screen {
             Screen::Confirm(_) => ScreenTag::Confirm,
             Screen::InputModal(_) => ScreenTag::InputModal,
             Screen::CommitFilter(_) => ScreenTag::CommitFilter,
+            Screen::FileFilter(_) => ScreenTag::FileFilter,
             Screen::Pager(_) => ScreenTag::Pager,
             Screen::Result(_) => ScreenTag::Result,
         }
@@ -153,6 +172,9 @@ pub enum ExternalTask {
     HardReset(String),
     SoftRevertCommitAndSwitch(String, String),
     TrimHistoryCommitAndPush(String, String),
+    RestoreFile(String, String),
+    RestorePatch(String, Option<String>),
+    RestoreCommitAndSwitch(String, String, String),
 }
 
 pub struct App {
@@ -300,6 +322,7 @@ impl App {
                         "Git & History",
                         vec![
                             format!("{}  Show Working Changes (Git Diff)", theme::ICON_DIFF),
+                            format!("{}  Restore File or Lines from History", theme::ICON_FILE),
                             format!(
                                 "{}  Rollback (Hard Reset: git reset --hard)",
                                 theme::ICON_HARD_RESET
@@ -383,13 +406,47 @@ impl App {
                     .map(|(s, indices)| (s.as_str(), indices.clone()))
                     .collect();
                 let hint = self.config.keybindings.filter_hint();
+                let title = format!("{}  SELECT COMMIT", theme::ICON_HISTORY);
                 let params = FilterParams {
+                    title: &title,
                     header_title: &state.header_title,
                     input: &state.input,
+                    search_placeholder: "Filter by hash, date, or message...",
+                    empty_message: " No matching commits found.",
                     filtered_items: &filtered_refs,
                     selected_index: state.selected_index,
                     hint: &hint,
                     preview_hash: &state.preview_hash,
+                    preview_lines: &state.preview_lines,
+                    preview_scroll: state.preview_scroll,
+                };
+
+                render_filter(frame, area, &params, &self.theme);
+            }
+
+            Screen::FileFilter(state) => {
+                let filtered = filter_commits(&state.files, state.input.value());
+                let filtered_refs: Vec<(&str, Vec<usize>)> = filtered
+                    .iter()
+                    .map(|(s, indices)| (s.as_str(), indices.clone()))
+                    .collect();
+                let hint =
+                    "[Enter] Restore  •  [Ctrl-p] Patch  •  [PgUp/PgDn] Scroll  •  [Esc] Back";
+                let title = format!("{}  SELECT FILE TO RESTORE", theme::ICON_FILE);
+                let header_title = format!(
+                    "Commit {} • Select file to restore or patch",
+                    state.commit_hash
+                );
+                let params = FilterParams {
+                    title: &title,
+                    header_title: &header_title,
+                    input: &state.input,
+                    search_placeholder: "Filter files...",
+                    empty_message: " No matching files found.",
+                    filtered_items: &filtered_refs,
+                    selected_index: state.selected_index,
+                    hint,
+                    preview_hash: &state.preview_file,
                     preview_lines: &state.preview_lines,
                     preview_scroll: state.preview_scroll,
                 };
@@ -435,6 +492,7 @@ impl App {
             ScreenTag::Confirm => self.handle_confirm_key(key),
             ScreenTag::InputModal => self.handle_input_modal_key(key),
             ScreenTag::CommitFilter => self.handle_commit_filter_key(key),
+            ScreenTag::FileFilter => self.handle_file_filter_key(key),
             ScreenTag::Pager => self.handle_pager_key(key),
             ScreenTag::Result => self.handle_result_key(key),
         }
@@ -457,6 +515,22 @@ impl App {
                     }
                     if should_update {
                         self.update_commit_preview();
+                    }
+                }
+                ScreenTag::FileFilter => {
+                    let mut should_update = false;
+                    if let Screen::FileFilter(ref mut state) = self.screen {
+                        let is_wide = term_width >= 96;
+                        let split_x = term_width / 2;
+                        if is_wide && mouse.column >= split_x {
+                            state.preview_scroll = state.preview_scroll.saturating_sub(1);
+                        } else if state.selected_index > 0 {
+                            state.selected_index -= 1;
+                            should_update = true;
+                        }
+                    }
+                    if should_update {
+                        self.update_file_preview();
                     }
                 }
                 ScreenTag::Pager => {
@@ -495,6 +569,28 @@ impl App {
                         self.update_commit_preview();
                     }
                 }
+                ScreenTag::FileFilter => {
+                    let mut should_update = false;
+                    if let Screen::FileFilter(ref mut state) = self.screen {
+                        let is_wide = term_width >= 96;
+                        let split_x = term_width / 2;
+                        if is_wide && mouse.column >= split_x {
+                            let total = state.preview_lines.len();
+                            state.preview_scroll =
+                                (state.preview_scroll + 1).min(total.saturating_sub(1));
+                        } else {
+                            let filtered = filter_commits(&state.files, state.input.value());
+                            let count = filtered.len();
+                            if count > 0 && state.selected_index + 1 < count {
+                                state.selected_index += 1;
+                                should_update = true;
+                            }
+                        }
+                    }
+                    if should_update {
+                        self.update_file_preview();
+                    }
+                }
                 ScreenTag::Pager => {
                     if let Screen::Pager(ref mut state) = self.screen {
                         let total = state.lines.len();
@@ -520,7 +616,7 @@ impl App {
         match kind {
             SubMenuKind::Updates => 5,
             SubMenuKind::Maintenance => 3,
-            SubMenuKind::GitHistory => 5,
+            SubMenuKind::GitHistory => 6,
         }
     }
 
@@ -595,7 +691,7 @@ impl App {
         let count: usize = match kind {
             SubMenuKind::Updates => 5,
             SubMenuKind::Maintenance => 3,
-            SubMenuKind::GitHistory => 5,
+            SubMenuKind::GitHistory => 6,
         };
 
         // Direct key shortcut for the Back item (e.g. 'q')
@@ -651,9 +747,10 @@ impl App {
             },
             SubMenuKind::GitHistory => match index {
                 0 => self.start_show_git_diff(),
-                1 => self.start_hard_reset_flow(),
-                2 => self.start_soft_revert_flow(),
-                3 => self.start_trim_history_flow(),
+                1 => self.start_restore_flow(),
+                2 => self.start_hard_reset_flow(),
+                3 => self.start_soft_revert_flow(),
+                4 => self.start_trim_history_flow(),
                 _ => self.screen = Screen::TopMenu,
             },
         }
@@ -767,6 +864,41 @@ impl App {
                 self.screen = Screen::Result(ResultState {
                     is_success: false,
                     title: "FAILED TO GET GIT DIFF".to_string(),
+                    message: err.to_string(),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+            }
+        }
+    }
+
+    fn start_restore_flow(&mut self) {
+        match git::get_recent_commits(&self.flake_dir) {
+            Ok(commits) if !commits.is_empty() => {
+                self.screen = Screen::CommitFilter(CommitFilterState {
+                    header_title: "Select commit to restore a file or lines/hunks from".to_string(),
+                    flow: FilterFlow::Restore,
+                    commits,
+                    input: Input::default(),
+                    selected_index: 0,
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    preview_hash: String::new(),
+                    preview_lines: Vec::new(),
+                    preview_scroll: 0,
+                });
+                self.update_commit_preview();
+            }
+            Ok(_) => {
+                self.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "COMMIT HISTORY EMPTY".to_string(),
+                    message: "No commits found in git log.".to_string(),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+            }
+            Err(err) => {
+                self.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "FAILED TO READ GIT LOG".to_string(),
                     message: err.to_string(),
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                 });
@@ -933,6 +1065,24 @@ impl App {
                     return_screen,
                 });
             }
+            PendingAction::RestoreFileExecute(hash, file) => {
+                self.pending_external_task = ExternalTask::RestoreFile(hash, file);
+            }
+            PendingAction::RestoreCommitAndSwitch(hash, file) => {
+                let default_text = self
+                    .config
+                    .commit_templates
+                    .restore_file
+                    .replace("{file}", &file)
+                    .replace("{hash}", &hash);
+                self.screen = Screen::InputModal(InputModalState {
+                    action_name: format!("Restore {file} from {hash}"),
+                    default_text,
+                    input: Input::default(),
+                    flow: InputFlow::RestoreFile(hash, file),
+                    return_screen,
+                });
+            }
         }
     }
 
@@ -982,6 +1132,9 @@ impl App {
             }
             InputFlow::TrimHistory(hash) => {
                 self.pending_external_task = ExternalTask::TrimHistoryCommitAndPush(hash, msg);
+            }
+            InputFlow::RestoreFile(hash, file) => {
+                self.pending_external_task = ExternalTask::RestoreCommitAndSwitch(hash, file, msg);
             }
         }
     }
@@ -1156,6 +1309,183 @@ impl App {
                     return_screen,
                 });
             }
+            FilterFlow::Restore => match git::get_commit_files(&self.flake_dir, &selected_hash) {
+                Ok(files) => {
+                    let mut all_items = vec![format!(
+                        "{} All files in commit (Interactive Line/Hunk Patch)",
+                        theme::ICON_PATCH
+                    )];
+                    all_items.extend(files);
+
+                    let prev_screen = Box::new(self.screen.clone());
+                    self.screen = Screen::FileFilter(FileFilterState {
+                        commit_hash: selected_hash,
+                        files: all_items,
+                        input: Input::default(),
+                        selected_index: 0,
+                        return_screen: prev_screen,
+                        preview_file: String::new(),
+                        preview_lines: Vec::new(),
+                        preview_scroll: 0,
+                    });
+                    self.update_file_preview();
+                }
+                Err(err) => {
+                    self.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "FAILED TO LIST COMMIT FILES".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+            },
+        }
+    }
+
+    pub fn update_file_preview(&mut self) {
+        if let Screen::FileFilter(ref mut state) = self.screen {
+            let filtered = filter_commits(&state.files, state.input.value());
+            let current_file = if !filtered.is_empty() && state.selected_index < filtered.len() {
+                let (ref file_str, _) = filtered[state.selected_index];
+                file_str.clone()
+            } else {
+                String::new()
+            };
+
+            if current_file != state.preview_file {
+                state.preview_file = current_file.clone();
+                state.preview_scroll = 0;
+                if !current_file.is_empty() {
+                    if current_file.contains("All files in commit") {
+                        match git::get_commit_diff(&self.flake_dir, &state.commit_hash) {
+                            Ok(diff) => {
+                                state.preview_lines = diff.lines().map(String::from).collect();
+                            }
+                            Err(err) => {
+                                state.preview_lines =
+                                    vec![format!("Failed to load commit diff: {err}")];
+                            }
+                        }
+                    } else {
+                        match git::get_file_diff_from_commit(
+                            &self.flake_dir,
+                            &state.commit_hash,
+                            &current_file,
+                        ) {
+                            Ok(diff) => {
+                                state.preview_lines = diff.lines().map(String::from).collect();
+                            }
+                            Err(err) => {
+                                state.preview_lines =
+                                    vec![format!("Failed to load file diff: {err}")];
+                            }
+                        }
+                    }
+                } else {
+                    state.preview_lines = vec!["No file selected".to_string()];
+                }
+            }
+        }
+    }
+
+    fn handle_file_filter_key(&mut self, key: KeyEvent) {
+        let (action_to_take, filtered_count) =
+            if let Screen::FileFilter(ref mut state) = self.screen {
+                let filtered = filter_commits(&state.files, state.input.value());
+                let count = filtered.len();
+
+                if self.config.keybindings.is_clear_input(&key) {
+                    state.input.reset();
+                    state.selected_index = 0;
+                    (None, count)
+                } else if (key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c'))
+                    || self.config.keybindings.is_back(&key)
+                {
+                    self.screen = *state.return_screen.clone();
+                    return;
+                } else if key.code == KeyCode::Up {
+                    if state.selected_index > 0 {
+                        state.selected_index -= 1;
+                    } else if count > 0 {
+                        state.selected_index = count - 1;
+                    }
+                    (None, count)
+                } else if key.code == KeyCode::Down {
+                    if count > 0 && state.selected_index + 1 < count {
+                        state.selected_index += 1;
+                    } else {
+                        state.selected_index = 0;
+                    }
+                    (None, count)
+                } else if self.config.keybindings.is_page_up(&key) {
+                    state.preview_scroll = state.preview_scroll.saturating_sub(10);
+                    (None, count)
+                } else if self.config.keybindings.is_page_down(&key) {
+                    let total = state.preview_lines.len();
+                    state.preview_scroll = (state.preview_scroll + 10).min(total.saturating_sub(1));
+                    (None, count)
+                } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('p')
+                {
+                    if count > 0 {
+                        let (ref file_str, _) = filtered[state.selected_index];
+                        let file_opt = if file_str.contains("All files in commit") {
+                            None
+                        } else {
+                            Some(file_str.clone())
+                        };
+                        (Some((state.commit_hash.clone(), file_opt, true)), count)
+                    } else {
+                        (None, 0)
+                    }
+                } else if self.config.keybindings.is_select(&key) {
+                    if count == 0 {
+                        (None, 0)
+                    } else {
+                        let (ref file_str, _) = filtered[state.selected_index];
+                        if file_str.contains("All files in commit") {
+                            (Some((state.commit_hash.clone(), None, true)), count)
+                        } else {
+                            (
+                                Some((state.commit_hash.clone(), Some(file_str.clone()), false)),
+                                count,
+                            )
+                        }
+                    }
+                } else {
+                    state.input.handle_event(&Event::Key(key));
+                    state.selected_index = 0;
+                    (None, count)
+                }
+            } else {
+                return;
+            };
+
+        if let Some((hash, file_opt, is_patch)) = action_to_take {
+            if is_patch {
+                self.pending_external_task = ExternalTask::RestorePatch(hash, file_opt);
+            } else if let Some(file) = file_opt {
+                self.screen = Screen::Confirm(ConfirmState {
+                    title: format!("{}  RESTORE FILE: {}", theme::ICON_FILE, file),
+                    lines: vec![
+                        format!("Target commit: {hash}"),
+                        format!("Overwrite '{file}' with the version from this commit?"),
+                        "Any uncommitted working changes in this file will be replaced."
+                            .to_string(),
+                    ],
+                    affirmative_label: "Restore Entire File".to_string(),
+                    negative_label: "Cancel".to_string(),
+                    selected_button: 0,
+                    is_danger: false,
+                    on_confirm: PendingAction::RestoreFileExecute(hash, file),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+            }
+        } else if filtered_count == 0 && self.config.keybindings.is_select(&key) {
+            // No action
+        } else {
+            self.update_file_preview();
         }
     }
 
@@ -1472,5 +1802,108 @@ mod tests {
             assert_eq!(state.preview_scroll, 1);
             assert_eq!(state.selected_index, 0);
         }
+    }
+
+    #[test]
+    fn test_file_filter_navigation_and_selection() {
+        let mut app = App::new();
+        app.screen = Screen::FileFilter(FileFilterState {
+            commit_hash: "abcdef1".to_string(),
+            files: vec![
+                "All files in commit (Interactive Line/Hunk Patch)".to_string(),
+                "configuration.nix".to_string(),
+                "flake.nix".to_string(),
+            ],
+            input: Input::default(),
+            selected_index: 0,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_file: String::new(),
+            preview_lines: Vec::new(),
+            preview_scroll: 0,
+        });
+
+        // Down arrow moves to configuration.nix
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        if let Screen::FileFilter(ref state) = app.screen {
+            assert_eq!(state.selected_index, 1);
+        }
+
+        // Enter on configuration.nix opens Confirm modal
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::Confirm(_)));
+        if let Screen::Confirm(ref state) = app.screen {
+            assert!(
+                matches!(state.on_confirm, PendingAction::RestoreFileExecute(ref h, ref f) if h == "abcdef1" && f == "configuration.nix")
+            );
+        }
+    }
+
+    #[test]
+    fn test_file_filter_patch_all_files() {
+        let mut app = App::new();
+        app.screen = Screen::FileFilter(FileFilterState {
+            commit_hash: "abcdef1".to_string(),
+            files: vec![
+                "All files in commit (Interactive Line/Hunk Patch)".to_string(),
+                "configuration.nix".to_string(),
+            ],
+            input: Input::default(),
+            selected_index: 0,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_file: String::new(),
+            preview_lines: Vec::new(),
+            preview_scroll: 0,
+        });
+
+        // Enter on index 0 (All files in commit) triggers RestorePatch
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::RestorePatch(ref h, None) if h == "abcdef1"
+        ));
+    }
+
+    #[test]
+    fn test_file_filter_ctrl_p_shortcut() {
+        let mut app = App::new();
+        app.screen = Screen::FileFilter(FileFilterState {
+            commit_hash: "abcdef1".to_string(),
+            files: vec![
+                "All files in commit (Interactive Line/Hunk Patch)".to_string(),
+                "configuration.nix".to_string(),
+            ],
+            input: Input::default(),
+            selected_index: 1,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_file: String::new(),
+            preview_lines: Vec::new(),
+            preview_scroll: 0,
+        });
+
+        // Ctrl-p on configuration.nix triggers RestorePatch with Some("configuration.nix")
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::RestorePatch(ref h, Some(ref f)) if h == "abcdef1" && f == "configuration.nix"
+        ));
+    }
+
+    #[test]
+    fn test_file_filter_esc_returns() {
+        let mut app = App::new();
+        app.screen = Screen::FileFilter(FileFilterState {
+            commit_hash: "abcdef1".to_string(),
+            files: vec!["configuration.nix".to_string()],
+            input: Input::default(),
+            selected_index: 0,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_file: String::new(),
+            preview_lines: Vec::new(),
+            preview_scroll: 0,
+        });
+
+        // Esc returns to return_screen (TopMenu)
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::TopMenu));
     }
 }
