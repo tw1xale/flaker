@@ -51,25 +51,7 @@ pub fn render_pager(
         .iter()
         .skip(scroll_offset)
         .take(visible_height)
-        .map(|raw_line| {
-            let style = if raw_line.starts_with('+') && !raw_line.starts_with("+++") {
-                Style::default().fg(theme.success)
-            } else if raw_line.starts_with('-') && !raw_line.starts_with("---") {
-                Style::default().fg(theme.danger)
-            } else if raw_line.starts_with("@@") {
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else if raw_line.starts_with("diff --git") || raw_line.starts_with("index ") {
-                Style::default()
-                    .fg(theme.secondary_info)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text)
-            };
-
-            Line::from(vec![Span::styled(raw_line.as_str(), style)])
-        })
+        .map(|raw_line| crate::ui::diff::format_diff_line(raw_line, theme))
         .collect();
 
     let paragraph = Paragraph::new(visible_lines);
