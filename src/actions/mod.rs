@@ -437,6 +437,8 @@ mod tests {
             assert!(!git::is_head_commit(repo_dir, "nonexistent123456789"));
 
             assert!(git::has_parent_commit(repo_dir, "HEAD"));
+            assert!(git::is_file_identical_to_head(repo_dir, "HEAD", "Cargo.toml"));
+            assert!(git::is_commit_identical_to_head(repo_dir, "HEAD"));
         }
     }
 }
