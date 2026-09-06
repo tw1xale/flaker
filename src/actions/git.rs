@@ -133,7 +133,7 @@ pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
 /// Fetches all commits from history for selection, with aligned columns (read-only, no sudo).
 pub fn get_recent_commits(dir: &Path) -> Result<Vec<String>> {
     let mut cmd = Command::new("git");
-    cmd.args(["log", "--format=%h%x1f%cr%x1f%s"])
+    cmd.args(["log", "--color=never", "--format=%h%x1f%cr%x1f%s"])
         .current_dir(dir);
 
     let output = run_silent(&mut cmd).context("Failed to execute git log")?;
@@ -180,11 +180,13 @@ pub fn get_recent_commits(dir: &Path) -> Result<Vec<String>> {
 /// Retrieves working directory and staged diffs (read-only, no sudo).
 pub fn get_diff(dir: &Path) -> Result<String> {
     let mut unstaged_cmd = Command::new("git");
-    unstaged_cmd.args(["diff"]).current_dir(dir);
+    unstaged_cmd.args(["diff", "--color=never"]).current_dir(dir);
     let unstaged = run_silent(&mut unstaged_cmd).context("Failed to execute git diff")?;
 
     let mut staged_cmd = Command::new("git");
-    staged_cmd.args(["diff", "--cached"]).current_dir(dir);
+    staged_cmd
+        .args(["diff", "--cached", "--color=never"])
+        .current_dir(dir);
     let staged = run_silent(&mut staged_cmd).context("Failed to execute git diff --cached")?;
 
     let mut combined = String::new();
@@ -315,7 +317,7 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
     }
 
     let mut cmd = Command::new("git");
-    cmd.args(["diff", "HEAD", hash, "--", file])
+    cmd.args(["diff", "--color=never", "HEAD", hash, "--", file])
         .current_dir(dir);
 
     let output = run_silent(&mut cmd).context("Failed to execute git diff for file")?;
