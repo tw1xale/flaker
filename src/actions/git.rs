@@ -310,14 +310,69 @@ pub fn get_commit_files(dir: &Path, hash: &str) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// Checks if the given commit hash or reference points to the current HEAD.
+pub fn is_head_commit(dir: &Path, hash: &str) -> bool {
+    let clean_hash = hash.trim();
+    if clean_hash.is_empty() {
+        return false;
+    }
+    if clean_hash.eq_ignore_ascii_case("HEAD") {
+        return true;
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
+    if let Ok(out) = run_silent(&mut cmd) {
+        if out.status.success() {
+            let full_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if full_head.starts_with(clean_hash) || clean_hash.starts_with(&full_head) {
+                return true;
+            }
+        }
+    }
+
+    let mut short_cmd = Command::new("git");
+    short_cmd.args(["rev-parse", "--short", "HEAD"]).current_dir(dir);
+    if let Ok(out) = run_silent(&mut short_cmd) {
+        if out.status.success() {
+            let short_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if short_head.starts_with(clean_hash) || clean_hash.starts_with(&short_head) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Checks if the given commit reference has a parent commit (i.e. not an initial/root commit).
+pub fn has_parent_commit(dir: &Path, hash: &str) -> bool {
+    let parent_ref = format!("{hash}~1");
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--verify", &parent_ref]).current_dir(dir);
+    if let Ok(out) = run_silent(&mut cmd) {
+        out.status.success()
+    } else {
+        false
+    }
+}
+
 /// Retrieves the diff between current HEAD and the specified commit for a single file (read-only, no sudo).
+/// If the commit is HEAD, it compares HEAD against HEAD~1 (showing the rollback diff).
 pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<String> {
     if hash.trim().is_empty() || file.trim().is_empty() {
         return Ok(String::new());
     }
 
+    let is_head = is_head_commit(dir, hash);
+    let target_ref = if is_head && has_parent_commit(dir, hash) {
+        format!("{hash}~1")
+    } else {
+        hash.to_string()
+    };
+
     let mut cmd = Command::new("git");
-    cmd.args(["diff", "--color=never", "HEAD", hash, "--", file])
+    cmd.args(["diff", "--color=never", "HEAD", &target_ref, "--", file])
         .current_dir(dir);
 
     let output = run_silent(&mut cmd).context("Failed to execute git diff for file")?;
@@ -327,23 +382,29 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if stdout.trim().is_empty() {
-        Ok(format!(
-            "File '{file}' is identical between HEAD and commit {hash}."
-        ))
+        if is_head {
+            Ok(format!(
+                "File '{file}' has no changes in commit {hash} (identical to parent commit)."
+            ))
+        } else {
+            Ok(format!(
+                "File '{file}' is identical between HEAD and commit {hash}."
+            ))
+        }
     } else {
         Ok(stdout)
     }
 }
 
-/// Restores a single file from a specific commit into the current tree.
-pub fn git_restore_file(dir: &Path, needs_sudo: bool, hash: &str, file: &str) -> Result<()> {
+/// Restores a single file from a specific commit reference (e.g. hash or hash~1) into the current tree.
+pub fn git_restore_file(dir: &Path, needs_sudo: bool, target_ref: &str, file: &str) -> Result<()> {
     let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["checkout", hash, "--", file]);
+    cmd.args(["checkout", target_ref, "--", file]);
 
     let prefix = if needs_sudo { "sudo " } else { "" };
     let status = run_visible(
         "RESTORING FILE FROM COMMIT",
-        &format!("{prefix}git checkout {hash} -- {file}"),
+        &format!("{prefix}git checkout {target_ref} -- {file}"),
         &mut cmd,
     )
     .context("Failed to execute git checkout for file")?;
@@ -355,14 +416,14 @@ pub fn git_restore_file(dir: &Path, needs_sudo: bool, hash: &str, file: &str) ->
     }
 }
 
-/// Interactively restores lines/hunks from a commit (optionally for a single file) using git checkout -p.
+/// Interactively restores lines/hunks from a commit reference (optionally for a single file) using git checkout -p.
 pub fn git_restore_patch(
     dir: &Path,
     needs_sudo: bool,
-    hash: &str,
+    target_ref: &str,
     file: Option<&str>,
 ) -> Result<()> {
-    let mut args = vec!["checkout", "-p", hash];
+    let mut args = vec!["checkout", "-p", target_ref];
     if let Some(f) = file {
         args.extend(["--", f]);
     }
@@ -374,7 +435,7 @@ pub fn git_restore_patch(
     let file_suffix = file.map(|f| format!(" -- {f}")).unwrap_or_default();
     let status = run_visible(
         "INTERACTIVE PATCH RESTORATION (LINES & HUNKS)",
-        &format!("{prefix}git checkout -p {hash}{file_suffix}"),
+        &format!("{prefix}git checkout -p {target_ref}{file_suffix}"),
         &mut cmd,
     )
     .context("Failed to execute interactive git checkout -p")?;
