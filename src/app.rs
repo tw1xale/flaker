@@ -67,6 +67,7 @@ pub struct ConfirmState {
     pub is_danger: bool,
     pub on_confirm: PendingAction,
     pub return_screen: Box<Screen>,
+    pub on_cancel_screen: Option<Box<Screen>>,
 }
 
 #[derive(Debug, Clone)]
@@ -817,6 +818,7 @@ impl App {
             is_danger: false,
             on_confirm: PendingAction::CleanStore,
             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Maintenance)),
+            on_cancel_screen: None,
         });
     }
 
@@ -1033,8 +1035,12 @@ impl App {
                 return;
             } else if self.config.keybindings.is_select(&key) {
                 if state.selected_button == 1 {
-                    // Cancelled
-                    self.screen = *state.return_screen.clone();
+                    // Cancelled or secondary choice
+                    if let Some(cancel_screen) = state.on_cancel_screen.take() {
+                        self.screen = *cancel_screen;
+                    } else {
+                        self.screen = *state.return_screen.clone();
+                    }
                     return;
                 }
                 (state.on_confirm.clone(), state.return_screen.clone())
@@ -1278,6 +1284,7 @@ impl App {
                     is_danger: true,
                     on_confirm: PendingAction::HardResetExecute(selected_hash),
                     return_screen,
+                    on_cancel_screen: None,
                 });
             }
             FilterFlow::SoftRevert => {
@@ -1308,6 +1315,7 @@ impl App {
                     is_danger: false,
                     on_confirm: PendingAction::TrimHistorySoftReset(selected_hash),
                     return_screen,
+                    on_cancel_screen: None,
                 });
             }
             FilterFlow::Restore => match git::get_commit_files(&self.flake_dir, &selected_hash) {
@@ -1464,23 +1472,45 @@ impl App {
             };
 
         if let Some((hash, file_opt, is_patch)) = action_to_take {
+            let is_head = git::is_head_commit(&self.flake_dir, &hash);
+            let target_ref = if is_head && git::has_parent_commit(&self.flake_dir, &hash) {
+                format!("{hash}~1")
+            } else {
+                hash.clone()
+            };
+
             if is_patch {
-                self.pending_external_task = ExternalTask::RestorePatch(hash, file_opt);
+                self.pending_external_task = ExternalTask::RestorePatch(target_ref, file_opt);
             } else if let Some(file) = file_opt {
+                let (title, line_desc, button_label) = if is_head {
+                    (
+                        format!("{}  ROLLBACK FILE: {}", theme::ICON_SOFT_REVERT, file),
+                        format!("Revert changes to '{file}' made in {hash} (restore from parent commit {target_ref})?"),
+                        "Rollback File".to_string(),
+                    )
+                } else {
+                    (
+                        format!("{}  RESTORE FILE: {}", theme::ICON_FILE, file),
+                        format!("Overwrite '{file}' with the version from snapshot {target_ref}?"),
+                        "Restore Entire File".to_string(),
+                    )
+                };
+
                 self.screen = Screen::Confirm(ConfirmState {
-                    title: format!("{}  RESTORE FILE: {}", theme::ICON_FILE, file),
+                    title,
                     lines: vec![
-                        format!("Target commit: {hash}"),
-                        format!("Overwrite '{file}' with the version from this commit?"),
+                        format!("Target: {target_ref}"),
+                        line_desc,
                         "Any uncommitted working changes in this file will be replaced."
                             .to_string(),
                     ],
-                    affirmative_label: "Restore Entire File".to_string(),
+                    affirmative_label: button_label,
                     negative_label: "Cancel".to_string(),
                     selected_button: 0,
                     is_danger: false,
-                    on_confirm: PendingAction::RestoreFileExecute(hash, file),
+                    on_confirm: PendingAction::RestoreFileExecute(target_ref, file),
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    on_cancel_screen: None,
                 });
             }
         } else if filtered_count == 0 && self.config.keybindings.is_select(&key) {
@@ -1906,5 +1936,33 @@ mod tests {
         // Esc returns to return_screen (TopMenu)
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(app.screen, Screen::TopMenu));
+    }
+
+    #[test]
+    fn test_file_filter_head_rollback() {
+        let mut app = App::new();
+        app.screen = Screen::FileFilter(FileFilterState {
+            commit_hash: "HEAD".to_string(),
+            files: vec![
+                "All files in commit (Interactive Line/Hunk Patch)".to_string(),
+                "configuration.nix".to_string(),
+            ],
+            input: Input::default(),
+            selected_index: 1,
+            return_screen: Box::new(Screen::TopMenu),
+            preview_file: String::new(),
+            preview_lines: Vec::new(),
+            preview_scroll: 0,
+        });
+
+        // Enter on configuration.nix when commit is HEAD targets HEAD~1 for rollback
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::Confirm(_)));
+        if let Screen::Confirm(ref state) = app.screen {
+            assert!(state.title.contains("ROLLBACK FILE"));
+            assert!(
+                matches!(state.on_confirm, PendingAction::RestoreFileExecute(ref h, ref f) if h == "HEAD~1" && f == "configuration.nix")
+            );
+        }
     }
 }

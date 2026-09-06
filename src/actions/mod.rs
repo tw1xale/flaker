@@ -427,4 +427,16 @@ mod tests {
             assert!(diff.is_ok());
         }
     }
+
+    #[test]
+    fn test_is_head_commit_and_parent() {
+        let repo_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if is_git_repo(repo_dir) {
+            assert!(git::is_head_commit(repo_dir, "HEAD"));
+            assert!(git::is_head_commit(repo_dir, "head"));
+            assert!(!git::is_head_commit(repo_dir, "nonexistent123456789"));
+
+            assert!(git::has_parent_commit(repo_dir, "HEAD"));
+        }
+    }
 }
