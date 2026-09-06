@@ -365,7 +365,7 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
     }
 
     let is_head = is_head_commit(dir, hash);
-    let target_ref = if is_head && has_parent_commit(dir, hash) {
+    let target_ref = if is_head {
         format!("{hash}~1")
     } else {
         hash.to_string()
