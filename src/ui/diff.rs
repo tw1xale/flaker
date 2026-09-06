@@ -41,6 +41,53 @@ fn parse_hunk_header(line: &str) -> (usize, String) {
     (line_num, heading)
 }
 
+/// Expands tab characters into spaces based on standard tab stops and strips harmful control characters.
+///
+/// Ensures terminal cursor alignment remains in sync with Ratatui's buffer coordinate system,
+/// preventing text overflow past widget boundaries and ghost artifacts from skipped cells.
+pub fn expand_tabs(line: &str, tab_width: usize) -> String {
+    if !line.contains('\t')
+        && !line.contains('\r')
+        && !line.chars().any(|c| (c as u32) < 32 && c != '\n')
+    {
+        return line.to_string();
+    }
+
+    let tab_width = tab_width.max(1);
+    let mut result = String::with_capacity(line.len() + 16);
+    let mut col = 0;
+
+    for ch in line.chars() {
+        match ch {
+            '\t' => {
+                let spaces = tab_width - (col % tab_width);
+                for _ in 0..spaces {
+                    result.push(' ');
+                }
+                col += spaces;
+            }
+            '\n' => {
+                result.push('\n');
+                col = 0;
+            }
+            '\r' => {
+                // Strip carriage returns
+            }
+            c if (c as u32) < 32 => {
+                // Sanitize non-printable control characters that could disrupt terminal cursor
+                result.push(' ');
+                col += 1;
+            }
+            c => {
+                result.push(c);
+                col += 1;
+            }
+        }
+    }
+
+    result
+}
+
 /// Converts raw git show/diff output into structured, clean UI lines.
 ///
 /// Filters out low-level Git plumbing lines (`diff --git`, `index`, `---`, `+++`)
@@ -50,8 +97,10 @@ pub fn prettify_diff(raw: &str) -> Vec<String> {
         return Vec::new();
     }
 
+    // Expand tabs upfront to ensure correct indentation and prevent terminal cursor desync
+    let expanded = expand_tabs(raw, 4);
     let mut result = Vec::new();
-    let mut lines = raw.lines().peekable();
+    let mut lines = expanded.lines().peekable();
 
     // 1. Commit metadata parsing (if starting with "commit <hash>")
     if lines.peek().is_some_and(|l| l.starts_with("commit ")) {
@@ -188,61 +237,64 @@ pub fn prettify_diff(raw: &str) -> Vec<String> {
 }
 
 /// Styles an individual line from prettified (or raw) diff into a Ratatui `Line`.
-pub fn format_diff_line<'a>(raw: &'a str, theme: &'a Theme) -> Line<'a> {
-    if let Some(hash) = raw.strip_prefix("§§meta:Commit:") {
+pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
+    let clean = expand_tabs(raw, 4);
+    let s = clean.as_str();
+
+    if let Some(hash) = s.strip_prefix("§§meta:Commit:") {
         Line::from(vec![
             Span::styled(" Commit:  ", Style::default().fg(theme.secondary_info)),
             Span::styled(
-                hash,
+                hash.to_string(),
                 Style::default()
                     .fg(theme.selected)
                     .add_modifier(Modifier::BOLD),
             ),
         ])
-    } else if let Some(author) = raw.strip_prefix("§§meta:Author:") {
+    } else if let Some(author) = s.strip_prefix("§§meta:Author:") {
         Line::from(vec![
             Span::styled(" Author:  ", Style::default().fg(theme.faint_hint)),
-            Span::styled(author, Style::default().fg(theme.text)),
+            Span::styled(author.to_string(), Style::default().fg(theme.text)),
         ])
-    } else if let Some(date) = raw.strip_prefix("§§meta:Date:") {
+    } else if let Some(date) = s.strip_prefix("§§meta:Date:") {
         Line::from(vec![
             Span::styled(" Date:    ", Style::default().fg(theme.faint_hint)),
-            Span::styled(date, Style::default().fg(theme.neutral_text)),
+            Span::styled(date.to_string(), Style::default().fg(theme.neutral_text)),
         ])
-    } else if let Some(merge) = raw.strip_prefix("§§meta:Merge:") {
+    } else if let Some(merge) = s.strip_prefix("§§meta:Merge:") {
         Line::from(vec![
             Span::styled(" Merge:   ", Style::default().fg(theme.faint_hint)),
-            Span::styled(merge, Style::default().fg(theme.accent)),
+            Span::styled(merge.to_string(), Style::default().fg(theme.accent)),
         ])
-    } else if let Some(msg) = raw.strip_prefix("§§meta:Message:") {
+    } else if let Some(msg) = s.strip_prefix("§§meta:Message:") {
         Line::from(vec![
             Span::styled(" Message: ", Style::default().fg(theme.faint_hint)),
             Span::styled(
-                msg,
+                msg.to_string(),
                 Style::default()
                     .fg(theme.header_title)
                     .add_modifier(Modifier::BOLD),
             ),
         ])
-    } else if let Some(msg) = raw.strip_prefix("§§meta:MessageCont:") {
+    } else if let Some(msg) = s.strip_prefix("§§meta:MessageCont:") {
         Line::from(vec![
             Span::raw("          "),
-            Span::styled(msg, Style::default().fg(theme.text)),
+            Span::styled(msg.to_string(), Style::default().fg(theme.text)),
         ])
-    } else if let Some(label) = raw.strip_prefix("§§divider:") {
+    } else if let Some(label) = s.strip_prefix("§§divider:") {
         let rule_len = 50usize.saturating_sub(label.chars().count() + 4).max(10);
         let rule = "─".repeat(rule_len);
         Line::from(vec![
             Span::styled("── ", Style::default().fg(theme.border)),
             Span::styled(
-                label,
+                label.to_string(),
                 Style::default()
                     .fg(theme.secondary_info)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" {rule}"), Style::default().fg(theme.border)),
         ])
-    } else if let Some(file_info) = raw.strip_prefix("§§file:") {
+    } else if let Some(file_info) = s.strip_prefix("§§file:") {
         let rule = "─".repeat(45);
         Line::from(vec![
             Span::styled("── ", Style::default().fg(theme.border)),
@@ -251,14 +303,14 @@ pub fn format_diff_line<'a>(raw: &'a str, theme: &'a Theme) -> Line<'a> {
                 Style::default().fg(theme.accent),
             ),
             Span::styled(
-                file_info,
+                file_info.to_string(),
                 Style::default()
                     .fg(theme.header_title)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" {rule}"), Style::default().fg(theme.border)),
         ])
-    } else if let Some(rest) = raw.strip_prefix("§§hunk:") {
+    } else if let Some(rest) = s.strip_prefix("§§hunk:") {
         let (line_num_str, heading) = rest.split_once(':').unwrap_or((rest, ""));
         let line_title = if line_num_str == "0" {
             "Changes".to_string()
@@ -278,14 +330,14 @@ pub fn format_diff_line<'a>(raw: &'a str, theme: &'a Theme) -> Line<'a> {
             ),
             Span::styled(format!(" {rule}"), Style::default().fg(theme.faint_hint)),
         ])
-    } else if let Some(hint) = raw.strip_prefix("§§hint:") {
+    } else if let Some(hint) = s.strip_prefix("§§hint:") {
         Line::from(Span::styled(
-            hint,
+            hint.to_string(),
             Style::default()
                 .fg(theme.faint_hint)
                 .add_modifier(Modifier::ITALIC),
         ))
-    } else if raw.starts_with('+') && !raw.starts_with("+++") {
+    } else if s.starts_with('+') && !s.starts_with("+++") {
         Line::from(vec![
             Span::styled(
                 "+",
@@ -293,9 +345,9 @@ pub fn format_diff_line<'a>(raw: &'a str, theme: &'a Theme) -> Line<'a> {
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&raw[1..], Style::default().fg(theme.success)),
+            Span::styled(s[1..].to_string(), Style::default().fg(theme.success)),
         ])
-    } else if raw.starts_with('-') && !raw.starts_with("---") {
+    } else if s.starts_with('-') && !s.starts_with("---") {
         Line::from(vec![
             Span::styled(
                 "-",
@@ -303,13 +355,13 @@ pub fn format_diff_line<'a>(raw: &'a str, theme: &'a Theme) -> Line<'a> {
                     .fg(theme.danger)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&raw[1..], Style::default().fg(theme.danger)),
+            Span::styled(s[1..].to_string(), Style::default().fg(theme.danger)),
         ])
-    } else if raw.contains('|') && (raw.contains('+') || raw.contains('-')) {
-        let parts: Vec<&str> = raw.splitn(2, '|').collect();
+    } else if s.contains('|') && (s.contains('+') || s.contains('-')) {
+        let parts: Vec<&str> = s.splitn(2, '|').collect();
         if parts.len() == 2 {
             let mut spans = vec![
-                Span::styled(parts[0], Style::default().fg(theme.text)),
+                Span::styled(parts[0].to_string(), Style::default().fg(theme.text)),
                 Span::styled("|", Style::default().fg(theme.faint_hint)),
             ];
             for ch in parts[1].chars() {
@@ -326,41 +378,40 @@ pub fn format_diff_line<'a>(raw: &'a str, theme: &'a Theme) -> Line<'a> {
             }
             Line::from(spans)
         } else {
-            Line::from(Span::styled(raw, Style::default().fg(theme.text)))
+            Line::from(Span::styled(s.to_string(), Style::default().fg(theme.text)))
         }
-    } else if raw.starts_with("@@") || raw.contains("file changed") || raw.contains("files changed")
-    {
+    } else if s.starts_with("@@") || s.contains("file changed") || s.contains("files changed") {
         Line::from(Span::styled(
-            raw,
+            s.to_string(),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ))
-    } else if raw.starts_with("diff --git") || raw.starts_with("index ") {
+    } else if s.starts_with("diff --git") || s.starts_with("index ") {
         Line::from(Span::styled(
-            raw,
+            s.to_string(),
             Style::default()
                 .fg(theme.secondary_info)
                 .add_modifier(Modifier::BOLD),
         ))
-    } else if raw.starts_with("commit ") {
+    } else if s.starts_with("commit ") {
         Line::from(Span::styled(
-            raw,
+            s.to_string(),
             Style::default()
                 .fg(theme.selected)
                 .add_modifier(Modifier::BOLD),
         ))
-    } else if raw.starts_with("Author:") || raw.starts_with("Date:") {
-        Line::from(Span::styled(raw, Style::default().fg(theme.neutral_text)))
-    } else if raw.contains("(current)") {
+    } else if s.starts_with("Author:") || s.starts_with("Date:") {
+        Line::from(Span::styled(s.to_string(), Style::default().fg(theme.neutral_text)))
+    } else if s.contains("(current)") {
         Line::from(Span::styled(
-            raw,
+            s.to_string(),
             Style::default()
                 .fg(theme.success)
                 .add_modifier(Modifier::BOLD),
         ))
     } else {
-        Line::from(Span::styled(raw, Style::default().fg(theme.text)))
+        Line::from(Span::styled(s.to_string(), Style::default().fg(theme.text)))
     }
 }
 
@@ -485,4 +536,68 @@ index 0000000..1234567
         assert!(prettified.iter().any(|l| l == "§§file:new.txt (new file)"));
         assert!(prettified.iter().any(|l| l == "§§hunk:1:"));
     }
+
+    #[test]
+    fn test_expand_tabs() {
+        assert_eq!(expand_tabs("hello", 4), "hello");
+        assert_eq!(expand_tabs("\thello", 4), "    hello");
+        assert_eq!(expand_tabs("+\thello", 4), "+   hello");
+        assert_eq!(expand_tabs("-\thello", 4), "-   hello");
+        assert_eq!(expand_tabs(" \thello", 4), "    hello");
+        assert_eq!(expand_tabs("+\t\thello", 4), "+       hello");
+        assert_eq!(expand_tabs("line\r\n", 4), "line\n");
+        assert_eq!(expand_tabs("line1\n+\thello\n", 4), "line1\n+   hello\n");
+    }
+
+    #[test]
+    fn test_prettify_diff_with_tabs() {
+        let raw = "diff --git a/file.lua b/file.lua\n@@ -1,2 +1,2 @@\n-\told_code()\n+\tnew_code()\n";
+        let prettified = prettify_diff(raw);
+        assert!(prettified.iter().any(|l| l == "-   old_code()"));
+        assert!(prettified.iter().any(|l| l == "+   new_code()"));
+    }
+
+    #[test]
+    fn test_format_diff_line_with_tabs() {
+        let theme = Theme::default();
+        let line = format_diff_line("+\thello_world()", &theme);
+        // Ensure no tab remains in any span
+        for span in &line.spans {
+            assert!(!span.content.contains('\t'));
+        }
+    }
+
+    #[test]
+    fn test_render_diff_line_into_buffer_no_spill() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::{Paragraph, Widget};
+
+        let theme = Theme::default();
+        let raw = "+\thl.exec_cmd(\"dbus-update-activation-environment\")";
+        let line = format_diff_line(raw, &theme);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 1));
+        let p = Paragraph::new(line);
+        // Render into a constrained area of width 15
+        p.render(Rect::new(0, 0, 15, 1), &mut buf);
+
+        // Verify alignment
+        assert_eq!(buf[(0, 0)].symbol(), "+");
+        assert_eq!(buf[(1, 0)].symbol(), " ");
+        assert_eq!(buf[(2, 0)].symbol(), " ");
+        assert_eq!(buf[(3, 0)].symbol(), " ");
+        assert_eq!(buf[(4, 0)].symbol(), "h");
+        assert_eq!(buf[(5, 0)].symbol(), "l");
+
+        // Verify strictly no characters written outside rendered rect (x >= 15)
+        for x in 15..30 {
+            assert_eq!(
+                buf[(x, 0)].symbol(),
+                " ",
+                "Cell at x={x} should be untouched"
+            );
+        }
+    }
 }
+
