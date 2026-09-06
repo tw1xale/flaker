@@ -132,6 +132,7 @@ All system administration actions are categorized into clean submenus:
 
 ### 📜 Git & History
 - **Show Working Changes (Git Diff)**: Integrated scrollable diff viewer with syntax highlighting (green for additions, red for deletions, mauve for hunk headers).
+- **Restore File or Patch (`git checkout <hash> -- <file>`)**: Interactive commit selector → select specific modified file with live file diff preview (or all files) → choose between restoring the full file or interactively restoring lines/hunks (`git checkout -p`) → optional commit & switch or keep in working tree.
 - **Hard Reset Rollback (`git reset --hard`)**: Interactive commit selector with live side-by-side diff preview → safety warning modal → hard reset → force push → switch system. *Requires confirmation.*
 - **Soft Revert Rollback (`git checkout <hash> -- .`)**: Interactive commit selector with live side-by-side diff preview → restores tree state → records a new commit → pushes and switches system.
 - **Trim History (`git reset --soft`)**: Interactive commit selector with live side-by-side diff preview → squashes commit history back to target commit while preserving working tree files → force push. *Requires confirmation.*
@@ -194,6 +195,7 @@ flake_update = "flake update"
 full_cycle = "full update"
 soft_revert = "revert to {hash}"
 trim_history = "trim history to {hash}"
+restore_file = "restore {file} from {hash}"
 
 [keybindings]
 # Enable instant single-digit selection (1, 2, 3...) for menu items

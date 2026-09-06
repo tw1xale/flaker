@@ -559,6 +559,124 @@ fn execute_external_task(
                 }
             }
         }
+
+        ExternalTask::RestoreFile(hash, file) => {
+            match git::git_restore_file(&flake_dir, needs_sudo, &hash, &file) {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "RESTORE FILE FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+                Ok(()) => {
+                    app.screen = Screen::Confirm(crate::app::ConfirmState {
+                        title: "RESTORE COMPLETED".to_string(),
+                        lines: vec![
+                            format!("Restored '{file}' from commit {hash} into working tree."),
+                            "Would you like to commit and switch system now?".to_string(),
+                        ],
+                        affirmative_label: "Commit & Switch".to_string(),
+                        negative_label: "Keep in Working Tree".to_string(),
+                        selected_button: 0,
+                        is_danger: false,
+                        on_confirm: crate::app::PendingAction::RestoreCommitAndSwitch(hash, file),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+            }
+        }
+
+        ExternalTask::RestorePatch(hash, file_opt) => {
+            let res = git::git_restore_patch(&flake_dir, needs_sudo, &hash, file_opt.as_deref());
+            match res {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "PATCH RESTORE FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+                Ok(()) => {
+                    let has_changes = git::has_uncommitted_changes(&flake_dir).unwrap_or(false);
+                    if has_changes {
+                        let target_name = file_opt.unwrap_or_else(|| "all files".to_string());
+                        app.screen = Screen::Confirm(crate::app::ConfirmState {
+                            title: "PATCH RESTORE COMPLETED".to_string(),
+                            lines: vec![
+                                format!("Applied interactive changes from {hash} ({target_name})."),
+                                "Would you like to commit and switch system now?".to_string(),
+                            ],
+                            affirmative_label: "Commit & Switch".to_string(),
+                            negative_label: "Keep in Working Tree".to_string(),
+                            selected_button: 0,
+                            is_danger: false,
+                            on_confirm: crate::app::PendingAction::RestoreCommitAndSwitch(
+                                hash,
+                                target_name,
+                            ),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                        });
+                    } else {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "NO CHANGES APPLIED".to_string(),
+                            message: "Interactive patch finished without modifications."
+                                .to_string(),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                        });
+                    }
+                }
+            }
+        }
+
+        ExternalTask::RestoreCommitAndSwitch(hash, file, msg) => {
+            let add_res = if is_git {
+                git::git_add(&flake_dir, needs_sudo, ".")
+            } else {
+                Ok(())
+            };
+
+            if add_res.is_err()
+                || (is_git && git::git_commit(&flake_dir, needs_sudo, &msg).is_err())
+            {
+                app.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "GIT COMMIT FAILED".to_string(),
+                    message: format!("Failed to record commit restoring {file} from {hash}"),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+            } else {
+                match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                    Ok(()) => {
+                        let push_warn = if is_git {
+                            try_push(&flake_dir, needs_sudo, false)
+                        } else {
+                            String::new()
+                        };
+
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "RESTORE & REBUILD SUCCESSFUL".to_string(),
+                            message: format!(
+                                "Restored {file} from {hash}, committed, and system activated{push_warn}"
+                            ),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                        });
+                    }
+                    Err(err) => {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: false,
+                            title: "REBUILD FAILED".to_string(),
+                            message: err.to_string(),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     app.refresh_metadata();

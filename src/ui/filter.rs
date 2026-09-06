@@ -10,8 +10,11 @@ use ratatui::{
 use tui_input::Input;
 
 pub struct FilterParams<'a> {
+    pub title: &'a str,
     pub header_title: &'a str,
     pub input: &'a Input,
+    pub search_placeholder: &'a str,
+    pub empty_message: &'a str,
     pub filtered_items: &'a [(&'a str, Vec<usize>)],
     pub selected_index: usize,
     pub hint: &'a str,
@@ -20,7 +23,7 @@ pub struct FilterParams<'a> {
     pub preview_scroll: usize,
 }
 
-/// Renders the commit selection fuzzy filter modal with live commit diff/stat preview pane.
+/// Renders the fuzzy filter modal with live diff/stat preview pane.
 pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme: &Theme) {
     let is_wide = area.width >= 96;
     let max_popup_w = if is_wide { 136 } else { 76 };
@@ -49,7 +52,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
 
     // Title
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
-        format!("{}  SELECT COMMIT", theme::ICON_HISTORY),
+        params.title,
         Style::default()
             .fg(theme.warning)
             .add_modifier(Modifier::BOLD),
@@ -110,7 +113,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
         Span::styled(prefix_text, Style::default().fg(theme.border)),
         if params.input.value().is_empty() {
             Span::styled(
-                "Filter by hash, date, or message...",
+                params.search_placeholder,
                 Style::default().fg(theme.faint_hint),
             )
         } else {
@@ -139,7 +142,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
 
     let list_items: Vec<ListItem> = if params.filtered_items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            " No matching commits found.",
+            params.empty_message,
             Style::default().fg(theme.faint_hint),
         )))]
     } else {

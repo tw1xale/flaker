@@ -73,6 +73,9 @@ pub struct CommitTemplatesConfig {
 
     #[serde(default = "default_commit_trim_history")]
     pub trim_history: String,
+
+    #[serde(default = "default_commit_restore_file")]
+    pub restore_file: String,
 }
 
 fn default_commit_rebuild() -> String {
@@ -95,6 +98,10 @@ fn default_commit_trim_history() -> String {
     "trim history to {hash}".to_string()
 }
 
+fn default_commit_restore_file() -> String {
+    "restore {file} from {hash}".to_string()
+}
+
 impl Default for CommitTemplatesConfig {
     fn default() -> Self {
         Self {
@@ -103,6 +110,7 @@ impl Default for CommitTemplatesConfig {
             full_cycle: default_commit_full_cycle(),
             soft_revert: default_commit_soft_revert(),
             trim_history: default_commit_trim_history(),
+            restore_file: default_commit_restore_file(),
         }
     }
 }
@@ -506,6 +514,7 @@ flake_update = "flake update"
 full_cycle = "full update"
 soft_revert = "revert to {hash}"
 trim_history = "trim history to {hash}"
+restore_file = "restore {file} from {hash}"
 
 [keybindings]
 # Enable instant single-digit selection (1, 2, 3...) for menu items
@@ -614,6 +623,10 @@ mod tests {
         assert_eq!(cfg.general.flake_target, "/etc/nixos#desktop");
         assert_eq!(cfg.theme.palette, "nord");
         assert_eq!(cfg.commit_templates.rebuild, "chore: rebuild system");
+        assert_eq!(
+            cfg.commit_templates.restore_file,
+            "restore {file} from {hash}"
+        );
         assert!(cfg.keybindings.enable_quick_digits);
         assert_eq!(cfg.keybindings.back_item_key, "q");
         assert_eq!(cfg.keybindings.up, vec!["Up", "w"]);

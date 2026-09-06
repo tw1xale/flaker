@@ -415,4 +415,16 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_git_get_commit_files_and_diff() {
+        let repo_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if is_git_repo(repo_dir) {
+            let files = git::get_commit_files(repo_dir, "HEAD");
+            assert!(files.is_ok());
+
+            let diff = git::get_file_diff_from_commit(repo_dir, "HEAD", "Cargo.toml");
+            assert!(diff.is_ok());
+        }
+    }
 }
