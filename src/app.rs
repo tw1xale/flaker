@@ -1473,7 +1473,7 @@ impl App {
 
         if let Some((hash, file_opt, is_patch)) = action_to_take {
             let is_head = git::is_head_commit(&self.flake_dir, &hash);
-            let target_ref = if is_head && git::has_parent_commit(&self.flake_dir, &hash) {
+            let target_ref = if is_head {
                 format!("{hash}~1")
             } else {
                 hash.clone()
