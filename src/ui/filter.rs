@@ -1,4 +1,5 @@
 use crate::theme::{self, Theme};
+use crate::ui::diff::format_diff_line;
 use crate::ui::header::centered_rect;
 use ratatui::{
     Frame,
@@ -272,69 +273,5 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
         )]))
         .alignment(Alignment::Right);
         frame.render_widget(footer_p, preview_chunks[1]);
-    }
-}
-
-/// Helper to style individual lines in the commit preview pane.
-fn format_diff_line<'a>(raw: &'a str, theme: &'a Theme) -> Line<'a> {
-    if raw.starts_with('+') && !raw.starts_with("+++") {
-        Line::from(Span::styled(raw, Style::default().fg(theme.success)))
-    } else if raw.starts_with('-') && !raw.starts_with("---") {
-        Line::from(Span::styled(raw, Style::default().fg(theme.danger)))
-    } else if raw.starts_with("@@") {
-        Line::from(Span::styled(
-            raw,
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-    } else if raw.starts_with("diff --git") || raw.starts_with("index ") {
-        Line::from(Span::styled(
-            raw,
-            Style::default()
-                .fg(theme.secondary_info)
-                .add_modifier(Modifier::BOLD),
-        ))
-    } else if raw.starts_with("commit ") {
-        Line::from(Span::styled(
-            raw,
-            Style::default()
-                .fg(theme.selected)
-                .add_modifier(Modifier::BOLD),
-        ))
-    } else if raw.starts_with("Author:") || raw.starts_with("Date:") {
-        Line::from(Span::styled(raw, Style::default().fg(theme.neutral_text)))
-    } else if raw.contains("files changed") || raw.contains("file changed") {
-        Line::from(Span::styled(
-            raw,
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-    } else if raw.contains('|') && (raw.contains('+') || raw.contains('-')) {
-        let parts: Vec<&str> = raw.splitn(2, '|').collect();
-        if parts.len() == 2 {
-            let mut spans = vec![
-                Span::styled(parts[0], Style::default().fg(theme.text)),
-                Span::styled("|", Style::default().fg(theme.faint_hint)),
-            ];
-            for ch in parts[1].chars() {
-                let style = match ch {
-                    '+' => Style::default()
-                        .fg(theme.success)
-                        .add_modifier(Modifier::BOLD),
-                    '-' => Style::default()
-                        .fg(theme.danger)
-                        .add_modifier(Modifier::BOLD),
-                    _ => Style::default().fg(theme.neutral_text),
-                };
-                spans.push(Span::styled(ch.to_string(), style));
-            }
-            Line::from(spans)
-        } else {
-            Line::from(Span::styled(raw, Style::default().fg(theme.text)))
-        }
-    } else {
-        Line::from(Span::styled(raw, Style::default().fg(theme.text)))
     }
 }

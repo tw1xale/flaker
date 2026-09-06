@@ -1,4 +1,5 @@
 pub mod confirm;
+pub mod diff;
 pub mod filter;
 pub mod header;
 pub mod input_modal;

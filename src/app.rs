@@ -14,6 +14,7 @@ use crate::config::{Config, load_config};
 use crate::theme::{self, Theme};
 use crate::ui::{
     confirm::{ConfirmParams, render_confirm},
+    diff::prettify_diff,
     filter::{FilterParams, render_filter},
     header::{centered_rect, render_header},
     input_modal::render_input_modal,
@@ -852,7 +853,7 @@ impl App {
                 });
             }
             Ok(diff) => {
-                let lines: Vec<String> = diff.lines().map(String::from).collect();
+                let lines: Vec<String> = prettify_diff(&diff);
                 self.screen = Screen::Pager(PagerState {
                     title: format!("{}  VIEWING CHANGES (git diff)", theme::ICON_DIFF),
                     lines,
@@ -1160,7 +1161,7 @@ impl App {
                 if !current_hash.is_empty() {
                     match git::get_commit_diff(&self.flake_dir, &current_hash) {
                         Ok(diff) => {
-                            state.preview_lines = diff.lines().map(String::from).collect();
+                            state.preview_lines = prettify_diff(&diff);
                         }
                         Err(err) => {
                             state.preview_lines =
@@ -1359,7 +1360,7 @@ impl App {
                     if current_file.contains("All files in commit") {
                         match git::get_commit_diff(&self.flake_dir, &state.commit_hash) {
                             Ok(diff) => {
-                                state.preview_lines = diff.lines().map(String::from).collect();
+                                state.preview_lines = prettify_diff(&diff);
                             }
                             Err(err) => {
                                 state.preview_lines =
@@ -1373,7 +1374,7 @@ impl App {
                             &current_file,
                         ) {
                             Ok(diff) => {
-                                state.preview_lines = diff.lines().map(String::from).collect();
+                                state.preview_lines = prettify_diff(&diff);
                             }
                             Err(err) => {
                                 state.preview_lines =
