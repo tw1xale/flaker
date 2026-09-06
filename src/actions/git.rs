@@ -357,15 +357,56 @@ pub fn has_parent_commit(dir: &Path, hash: &str) -> bool {
     }
 }
 
+/// Checks if the content of a specific file at commit `hash` is identical to current HEAD.
+pub fn is_file_identical_to_head(dir: &Path, hash: &str, file: &str) -> bool {
+    let clean_hash = hash.trim();
+    if clean_hash.is_empty() || file.trim().is_empty() {
+        return true;
+    }
+    if is_head_commit(dir, clean_hash) {
+        return true;
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--color=never", "--quiet", "HEAD", clean_hash, "--", file])
+        .current_dir(dir);
+    if let Ok(out) = run_silent(&mut cmd) {
+        // exit code 0 means no differences between HEAD and clean_hash for this file
+        out.status.success()
+    } else {
+        false
+    }
+}
+
+/// Checks if all files in the given commit are identical to current HEAD.
+pub fn is_commit_identical_to_head(dir: &Path, hash: &str) -> bool {
+    let clean_hash = hash.trim();
+    if clean_hash.is_empty() {
+        return true;
+    }
+    if is_head_commit(dir, clean_hash) {
+        return true;
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--color=never", "--quiet", "HEAD", clean_hash])
+        .current_dir(dir);
+    if let Ok(out) = run_silent(&mut cmd) {
+        out.status.success()
+    } else {
+        false
+    }
+}
+
 /// Retrieves the diff between current HEAD and the specified commit for a single file (read-only, no sudo).
-/// If the commit is HEAD, it compares HEAD against HEAD~1 (showing the rollback diff).
+/// If the file at `hash` is already identical to HEAD, it compares HEAD against `hash~1` (showing the rollback diff).
 pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<String> {
     if hash.trim().is_empty() || file.trim().is_empty() {
         return Ok(String::new());
     }
 
-    let is_head = is_head_commit(dir, hash);
-    let target_ref = if is_head {
+    let is_identical = is_file_identical_to_head(dir, hash, file);
+    let target_ref = if is_identical {
         format!("{hash}~1")
     } else {
         hash.to_string()
@@ -382,15 +423,19 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if stdout.trim().is_empty() {
-        if is_head {
+        if is_identical {
             Ok(format!(
-                "File '{file}' has no changes in commit {hash} (identical to parent commit)."
+                "File '{file}' in commit {hash} has no differences compared to parent commit {target_ref}."
             ))
         } else {
             Ok(format!(
                 "File '{file}' is identical between HEAD and commit {hash}."
             ))
         }
+    } else if is_identical {
+        Ok(format!(
+            "§§hint:Rollback preview (reverting changes from {hash} to {target_ref}):\n{stdout}"
+        ))
     } else {
         Ok(stdout)
     }

@@ -1472,8 +1472,12 @@ impl App {
             };
 
         if let Some((hash, file_opt, is_patch)) = action_to_take {
-            let is_head = git::is_head_commit(&self.flake_dir, &hash);
-            let target_ref = if is_head {
+            let is_rollback = if let Some(ref file) = file_opt {
+                git::is_file_identical_to_head(&self.flake_dir, &hash, file)
+            } else {
+                git::is_commit_identical_to_head(&self.flake_dir, &hash)
+            };
+            let target_ref = if is_rollback {
                 format!("{hash}~1")
             } else {
                 hash.clone()
@@ -1482,7 +1486,7 @@ impl App {
             if is_patch {
                 self.pending_external_task = ExternalTask::RestorePatch(target_ref, file_opt);
             } else if let Some(file) = file_opt {
-                let (title, line_desc, button_label) = if is_head {
+                let (title, line_desc, button_label) = if is_rollback {
                     (
                         format!("{}  ROLLBACK FILE: {}", theme::ICON_SOFT_REVERT, file),
                         format!("Revert changes to '{file}' made in {hash} (restore from parent commit {target_ref})?"),
