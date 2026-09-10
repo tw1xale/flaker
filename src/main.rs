@@ -772,10 +772,16 @@ fn execute_external_task(
                         String::new()
                     };
 
+                    let action_desc = if is_git && has_staged {
+                        format!("{success_message}{push_warn}")
+                    } else {
+                        "System successfully rebuilt and activated (working tree had no changes to commit)".to_string()
+                    };
+
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: success_title,
-                        message: format!("{success_message}{push_warn}"),
+                        message: action_desc,
                         return_screen: Box::new(Screen::SubMenu(return_screen)),
                     });
                 }
@@ -874,12 +880,18 @@ fn execute_external_task(
                         String::new()
                     };
 
+                    let action_desc = if is_git && has_staged {
+                        format!(
+                            "Working tree reverted to {hash}, committed, and system activated{push_warn}"
+                        )
+                    } else {
+                        format!("Working tree was already at {hash}, system activated")
+                    };
+
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: "SOFT REVERT SUCCESSFUL".to_string(),
-                        message: format!(
-                            "Working tree reverted to {hash}, committed, and system activated{push_warn}"
-                        ),
+                        message: action_desc,
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                     });
                 }
@@ -913,12 +925,18 @@ fn execute_external_task(
                         String::new()
                     };
 
+                    let action_desc = if is_git && has_staged {
+                        format!(
+                            "Restored {file} from {hash}, committed, and system activated{push_warn}"
+                        )
+                    } else {
+                        format!("File {file} was already identical to {hash}, system activated")
+                    };
+
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: "RESTORE & REBUILD SUCCESSFUL".to_string(),
-                        message: format!(
-                            "Restored {file} from {hash}, committed, and system activated{push_warn}"
-                        ),
+                        message: action_desc,
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                     });
                 }
