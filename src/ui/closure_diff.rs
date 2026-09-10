@@ -30,9 +30,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         Constraint::Length(1), // Title
         Constraint::Length(1), // Summary badge line
         Constraint::Length(1), // Search / filter bar
-        Constraint::Length(1), // Divider / spacer
-        Constraint::Min(6),    // List of items
-        Constraint::Length(1), // Divider / spacer
+        Constraint::Min(4),    // List of items
         Constraint::Length(1), // Actions & hint bar
     ])
     .split(inner);
@@ -81,32 +79,34 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
             Style::default().fg(theme.neutral_text),
         ),
         Span::styled(
-            format!("+{} Added  ", added),
+            format!("+{added} Added  "),
             Style::default()
                 .fg(theme.success)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│  ", Style::default().fg(theme.faint_hint)),
         Span::styled(
-            format!("-{} Removed  ", removed),
+            format!("-{removed} Removed  "),
             Style::default()
                 .fg(theme.danger)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│  ", Style::default().fg(theme.faint_hint)),
         Span::styled(
-            format!("~{} Updated  ", updated),
+            format!("~{updated} Updated  "),
             Style::default()
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("│  ", Style::default().fg(theme.faint_hint)),
         Span::styled(
-            format!("•{} Rebuilt", rebuilt),
+            format!("•{rebuilt} Rebuilt"),
             Style::default().fg(theme.faint_hint),
         ),
     ]);
-    let summary_p = Paragraph::new(summary_line).alignment(Alignment::Center);
+    let summary_p = Paragraph::new(summary_line)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
     frame.render_widget(summary_p, chunks[1]);
 
     // Search / filter bar
@@ -154,10 +154,11 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
             msg,
             Style::default().fg(theme.faint_hint),
         )]))
-        .alignment(Alignment::Center);
-        frame.render_widget(empty_p, chunks[4]);
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
+        frame.render_widget(empty_p, chunks[3]);
     } else {
-        let max_visible = chunks[4].height as usize;
+        let max_visible = chunks[3].height as usize;
         let scroll_offset = if state.cursor >= max_visible {
             state.cursor.saturating_sub(max_visible).saturating_add(1)
         } else {
@@ -273,7 +274,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
             .collect();
 
         let list = List::new(list_items);
-        frame.render_widget(list, chunks[4]);
+        frame.render_widget(list, chunks[3]);
     }
 
     // Actions & hint footer
@@ -298,8 +299,10 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         Span::styled("Type to Filter  •  ", Style::default().fg(theme.faint_hint)),
         Span::styled("↑/↓ Navigate", Style::default().fg(theme.faint_hint)),
     ]);
-    let hint_p = Paragraph::new(hint_line).alignment(Alignment::Center);
-    frame.render_widget(hint_p, chunks[6]);
+    let hint_p = Paragraph::new(hint_line)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
+    frame.render_widget(hint_p, chunks[4]);
 }
 
 #[cfg(test)]
@@ -351,8 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn test_render_closure_diff_empty_small_area() {
-        let backend = TestBackend::new(40, 10);
+    fn test_render_closure_diff_small_term() {
+        let backend = TestBackend::new(20, 4);
         let mut terminal = Terminal::new(backend).unwrap();
         let theme = Theme::default();
 
@@ -363,7 +366,7 @@ mod tests {
             cursor: 0,
             on_confirm_task: None,
             return_screen: Box::new(crate::app::Screen::TopMenu),
-            title_suffix: String::new(),
+            title_suffix: "".to_string(),
         };
 
         terminal
