@@ -10,7 +10,7 @@ const fn cat_to_rat(c: catppuccin::Color) -> Color {
 /// Parses a hex color string like "#89b4fa" or "89b4fa" into ratatui Color::Rgb.
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
     let s = hex.trim().trim_start_matches('#');
-    if s.len() == 6 {
+    if s.len() == 6 && s.is_ascii() {
         let r = u8::from_str_radix(&s[0..2], 16).ok()?;
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;
         let b = u8::from_str_radix(&s[4..6], 16).ok()?;
@@ -317,6 +317,8 @@ mod tests {
             Some(Color::Rgb(0xcb, 0xa6, 0xf7))
         );
         assert_eq!(parse_hex_color("invalid"), None);
+        assert_eq!(parse_hex_color("你好"), None);
+        assert_eq!(parse_hex_color("краска"), None);
     }
 
     #[test]

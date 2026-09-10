@@ -186,8 +186,8 @@ pub fn detect_flake_context(config: &Config) -> FlakeContext {
         });
 
     if let Some(target_str) = target_override {
-        let (dir_part, _target_name) = if let Some(idx) = target_str.find('#') {
-            (&target_str[..idx], &target_str[idx + 1..])
+        let (dir_part, _target_name) = if let Some((dir, name)) = target_str.split_once('#') {
+            (dir, name)
         } else {
             (target_str.as_str(), "")
         };
@@ -437,7 +437,11 @@ mod tests {
             assert!(!git::is_head_commit(repo_dir, "nonexistent123456789"));
 
             assert!(git::has_parent_commit(repo_dir, "HEAD"));
-            assert!(git::is_file_identical_to_head(repo_dir, "HEAD", "Cargo.toml"));
+            assert!(git::is_file_identical_to_head(
+                repo_dir,
+                "HEAD",
+                "Cargo.toml"
+            ));
             assert!(git::is_commit_identical_to_head(repo_dir, "HEAD"));
         }
     }
