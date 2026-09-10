@@ -57,16 +57,31 @@ pub struct ClosureDiffItem {
     pub raw: String,
 }
 
-/// Strips ANSI escape sequences from strings.
+/// Strips ANSI escape sequences from strings safely without dropping valid text.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut in_escape = false;
-    for c in s.chars() {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
         if c == '\x1b' {
-            in_escape = true;
-        } else if in_escape {
-            if c == 'm' || c.is_ascii_alphabetic() {
-                in_escape = false;
+            if let Some(&next) = chars.peek() {
+                if next == '[' {
+                    chars.next();
+                    for c2 in chars.by_ref() {
+                        if (0x40..=0x7E).contains(&(c2 as u32)) {
+                            break;
+                        }
+                    }
+                } else if next == ']' {
+                    chars.next();
+                    for c2 in chars.by_ref() {
+                        if c2 == '\x07' || c2 == '\x1b' {
+                            break;
+                        }
+                    }
+                } else if next == '(' || next == ')' {
+                    chars.next();
+                    chars.next();
+                }
             }
         } else {
             out.push(c);
@@ -99,7 +114,8 @@ pub fn parse_diff_closures_output(output: &str) -> Vec<ClosureDiffItem> {
         let package = pkg.trim().to_string();
         let rest = rest.trim();
 
-        if let Some((left, right)) = rest.split_once('→') {
+        let arrow_split = rest.split_once('→').or_else(|| rest.split_once("->"));
+        if let Some((left, right)) = arrow_split {
             let left = left.trim();
             let right = right.trim();
 
@@ -163,13 +179,17 @@ pub fn parse_diff_closures_output(output: &str) -> Vec<ClosureDiffItem> {
 /// Safely removes the `./result` symlink in `dir`, using sudo if unprivileged removal fails.
 pub fn clean_result_link(dir: &Path, needs_sudo: bool) {
     let result_link = dir.join("result");
-    if result_link.symlink_metadata().is_ok()
-        && fs::remove_file(&result_link).is_err()
-        && needs_sudo
-    {
-        let mut cmd = Command::new("sudo");
-        cmd.args(["rm", "-f", &result_link.to_string_lossy()]);
-        let _ = cmd.status();
+    if let Ok(meta) = result_link.symlink_metadata() {
+        let removed = if meta.is_dir() {
+            fs::remove_dir_all(&result_link).is_ok()
+        } else {
+            fs::remove_file(&result_link).is_ok()
+        };
+        if !removed && needs_sudo {
+            let mut cmd = Command::new("sudo");
+            cmd.args(["rm", "-rf", &result_link.to_string_lossy()]);
+            let _ = cmd.status();
+        }
     }
 }
 
@@ -682,6 +702,26 @@ warning: some warning
         assert_eq!(items[0].before_version.as_deref(), Some("134.0"));
         assert_eq!(items[0].after_version.as_deref(), Some("135.0"));
         assert_eq!(items[0].size_delta.as_deref(), Some("+12.4 MiB"));
+    }
+
+    #[test]
+    fn test_parse_diff_closures_output_ascii_arrow() {
+        let sample = "bash: 5.2p26 -> 5.2p32, +4.2 KiB\n";
+        let items = parse_diff_closures_output(sample);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].package, "bash");
+        assert_eq!(items[0].before_version.as_deref(), Some("5.2p26"));
+        assert_eq!(items[0].after_version.as_deref(), Some("5.2p32"));
+        assert_eq!(items[0].size_delta.as_deref(), Some("+4.2 KiB"));
+        assert_eq!(items[0].kind, DiffKind::Updated);
+    }
+
+    #[test]
+    fn test_strip_ansi_comprehensive() {
+        assert_eq!(strip_ansi("\x1b[32mhello\x1b[0m world"), "hello world");
+        assert_eq!(strip_ansi("\x1b]0;ignored title\x07actual text"), "actual text");
+        assert_eq!(strip_ansi("plain text"), "plain text");
+        assert_eq!(strip_ansi(""), "");
     }
 
     #[test]
