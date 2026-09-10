@@ -21,13 +21,30 @@ use crate::ui::{
     menu::{MenuParams, render_menu},
     pager::render_pager,
     result::render_result,
+    selective::render_selective,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubMenuKind {
     Updates,
+    SelectiveUpdate,
     Maintenance,
     GitHistory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectiveMode {
+    Include,
+    Exclude,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelectiveUpdateState {
+    pub mode: SelectiveMode,
+    pub inputs: Vec<crate::actions::nix::FlakeInput>,
+    pub selected: Vec<bool>,
+    pub cursor: usize,
+    pub return_screen: Box<Screen>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +63,7 @@ pub enum InputFlow {
     SoftRevert(String),
     TrimHistory(String),
     RestoreFile(String, String),
+    SelectiveFullCycle(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +73,8 @@ pub enum PendingAction {
     TrimHistorySoftReset(String),
     RestoreFileExecute(String, String),
     RestoreCommitAndSwitch(String, String),
+    SelectiveUpdateLockfile(Vec<String>),
+    SelectiveFullCycle(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +86,7 @@ pub struct ConfirmState {
     pub selected_button: usize, // 0: aff, 1: neg
     pub is_danger: bool,
     pub on_confirm: PendingAction,
+    pub on_secondary: Option<PendingAction>,
     pub return_screen: Box<Screen>,
     pub on_cancel_screen: Option<Box<Screen>>,
 }
@@ -130,6 +151,7 @@ pub enum ScreenTag {
     FileFilter,
     Pager,
     Result,
+    SelectiveUpdate,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +164,7 @@ pub enum Screen {
     FileFilter(FileFilterState),
     Pager(PagerState),
     Result(ResultState),
+    SelectiveUpdate(SelectiveUpdateState),
 }
 
 impl Screen {
@@ -155,6 +178,7 @@ impl Screen {
             Screen::FileFilter(_) => ScreenTag::FileFilter,
             Screen::Pager(_) => ScreenTag::Pager,
             Screen::Result(_) => ScreenTag::Result,
+            Screen::SelectiveUpdate(_) => ScreenTag::SelectiveUpdate,
         }
     }
 }
@@ -169,6 +193,9 @@ pub enum ExternalTask {
     UpdateFlakeAndPush(String),
     FullCycleCommitAndSwitch(String),
     FullCycleSwitchOnly,
+    SelectiveUpdateFlakeOnly(Vec<String>),
+    SelectiveFullCycleCommitAndSwitch(Vec<String>, String),
+    SelectiveFullCycleSwitchOnly(Vec<String>),
     TestBuild,
     CleanStore,
     HardReset(String),
@@ -308,7 +335,19 @@ impl App {
                             format!("{}  Rebuild System (Rebuild & Switch)", theme::ICON_REBUILD),
                             format!("{}  Update Lockfile (Flake Update)", theme::ICON_PACKAGE),
                             format!("{}  Full Cycle (Update + Switch)", theme::ICON_FULL_CYCLE),
+                            format!(
+                                "{}  Selective Update (Pick / Exclude Inputs)",
+                                theme::ICON_PATCH
+                            ),
                             format!("{}  Test Build (Dry Run / Build)", theme::ICON_TEST_BUILD),
+                            format!("{}  Back", theme::ICON_BACK),
+                        ],
+                    ),
+                    SubMenuKind::SelectiveUpdate => (
+                        "Selective Flake Update",
+                        vec![
+                            format!("{}  Update Selected Inputs (Include)", theme::ICON_PACKAGE),
+                            format!("{}  Update All Except... (Exclude)", theme::ICON_CLEANUP),
                             format!("{}  Back", theme::ICON_BACK),
                         ],
                     ),
@@ -484,6 +523,10 @@ impl App {
                     &self.theme,
                 );
             }
+
+            Screen::SelectiveUpdate(state) => {
+                render_selective(frame, area, state, &self.theme);
+            }
         }
     }
 
@@ -497,6 +540,7 @@ impl App {
             ScreenTag::FileFilter => self.handle_file_filter_key(key),
             ScreenTag::Pager => self.handle_pager_key(key),
             ScreenTag::Result => self.handle_result_key(key),
+            ScreenTag::SelectiveUpdate => self.handle_selective_update_key(key),
         }
     }
 
@@ -538,6 +582,11 @@ impl App {
                 ScreenTag::Pager => {
                     if let Screen::Pager(ref mut state) = self.screen {
                         state.scroll_offset = state.scroll_offset.saturating_sub(1);
+                    }
+                }
+                ScreenTag::SelectiveUpdate => {
+                    if let Screen::SelectiveUpdate(ref mut state) = self.screen {
+                        state.cursor = state.cursor.saturating_sub(1);
                     }
                 }
                 ScreenTag::TopMenu if self.top_menu_index > 0 => {
@@ -600,6 +649,13 @@ impl App {
                             (state.scroll_offset + 1).min(total.saturating_sub(1));
                     }
                 }
+                ScreenTag::SelectiveUpdate => {
+                    if let Screen::SelectiveUpdate(ref mut state) = self.screen
+                        && state.cursor + 1 < state.inputs.len()
+                    {
+                        state.cursor += 1;
+                    }
+                }
                 ScreenTag::TopMenu if self.top_menu_index + 1 < 4 => {
                     self.top_menu_index += 1;
                 }
@@ -616,7 +672,8 @@ impl App {
 
     pub fn submenu_item_count(&self, kind: SubMenuKind) -> usize {
         match kind {
-            SubMenuKind::Updates => 5,
+            SubMenuKind::Updates => 6,
+            SubMenuKind::SelectiveUpdate => 3,
             SubMenuKind::Maintenance => 3,
             SubMenuKind::GitHistory => 6,
         }
@@ -690,15 +747,16 @@ impl App {
     }
 
     fn handle_sub_menu_key(&mut self, kind: SubMenuKind, key: KeyEvent) {
-        let count: usize = match kind {
-            SubMenuKind::Updates => 5,
-            SubMenuKind::Maintenance => 3,
-            SubMenuKind::GitHistory => 6,
-        };
+        let count: usize = self.submenu_item_count(kind);
 
         // Direct key shortcut for the Back item (e.g. 'q')
         if self.config.keybindings.is_back_item_key(&key) {
-            self.screen = Screen::TopMenu;
+            if kind == SubMenuKind::SelectiveUpdate {
+                self.submenu_index = 3;
+                self.screen = Screen::SubMenu(SubMenuKind::Updates);
+            } else {
+                self.screen = Screen::TopMenu;
+            }
             return;
         }
 
@@ -725,7 +783,12 @@ impl App {
                 self.submenu_index = 0;
             }
         } else if self.config.keybindings.is_back(&key) {
-            self.screen = Screen::TopMenu;
+            if kind == SubMenuKind::SelectiveUpdate {
+                self.submenu_index = 3;
+                self.screen = Screen::SubMenu(SubMenuKind::Updates);
+            } else {
+                self.screen = Screen::TopMenu;
+            }
         } else if self.config.keybindings.is_quit(&key) {
             self.should_quit = true;
         } else if self.config.keybindings.is_select(&key) {
@@ -739,8 +802,20 @@ impl App {
                 0 => self.start_rebuild_system(),
                 1 => self.start_update_lockfile(),
                 2 => self.start_full_cycle(),
-                3 => self.start_test_build(),
+                3 => {
+                    self.submenu_index = 0;
+                    self.screen = Screen::SubMenu(SubMenuKind::SelectiveUpdate);
+                }
+                4 => self.start_test_build(),
                 _ => self.screen = Screen::TopMenu,
+            },
+            SubMenuKind::SelectiveUpdate => match index {
+                0 => self.start_selective_update(SelectiveMode::Include),
+                1 => self.start_selective_update(SelectiveMode::Exclude),
+                _ => {
+                    self.submenu_index = 3;
+                    self.screen = Screen::SubMenu(SubMenuKind::Updates);
+                }
             },
             SubMenuKind::Maintenance => match index {
                 0 => self.start_clean_store(),
@@ -817,6 +892,7 @@ impl App {
             selected_button: 0,
             is_danger: false,
             on_confirm: PendingAction::CleanStore,
+            on_secondary: None,
             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Maintenance)),
             on_cancel_screen: None,
         });
@@ -1021,7 +1097,7 @@ impl App {
     }
 
     fn handle_confirm_key(&mut self, key: KeyEvent) {
-        let (on_confirm, return_screen) = if let Screen::Confirm(ref mut state) = self.screen {
+        let (chosen_action, return_screen) = if let Screen::Confirm(ref mut state) = self.screen {
             if key.code == KeyCode::Left
                 || key.code == KeyCode::Right
                 || key.code == KeyCode::Tab
@@ -1031,19 +1107,26 @@ impl App {
                 state.selected_button = 1 - state.selected_button;
                 return;
             } else if self.config.keybindings.is_back(&key) {
-                self.screen = *state.return_screen.clone();
+                if let Some(cancel_screen) = state.on_cancel_screen.take() {
+                    self.screen = *cancel_screen;
+                } else {
+                    self.screen = *state.return_screen.clone();
+                }
                 return;
             } else if self.config.keybindings.is_select(&key) {
                 if state.selected_button == 1 {
-                    // Cancelled or secondary choice
-                    if let Some(cancel_screen) = state.on_cancel_screen.take() {
+                    if let Some(sec) = state.on_secondary.take() {
+                        (sec, state.return_screen.clone())
+                    } else if let Some(cancel_screen) = state.on_cancel_screen.take() {
                         self.screen = *cancel_screen;
+                        return;
                     } else {
                         self.screen = *state.return_screen.clone();
+                        return;
                     }
-                    return;
+                } else {
+                    (state.on_confirm.clone(), state.return_screen.clone())
                 }
-                (state.on_confirm.clone(), state.return_screen.clone())
             } else {
                 return;
             }
@@ -1051,7 +1134,7 @@ impl App {
             return;
         };
 
-        match on_confirm {
+        match chosen_action {
             PendingAction::CleanStore => {
                 self.pending_external_task = ExternalTask::CleanStore;
             }
@@ -1089,6 +1172,23 @@ impl App {
                     flow: InputFlow::RestoreFile(hash, file),
                     return_screen,
                 });
+            }
+            PendingAction::SelectiveUpdateLockfile(inputs) => {
+                self.pending_external_task = ExternalTask::SelectiveUpdateFlakeOnly(inputs);
+            }
+            PendingAction::SelectiveFullCycle(inputs) => {
+                if self.is_git {
+                    let default_text = format!("chore(flake): update {}", inputs.join(", "));
+                    self.screen = Screen::InputModal(InputModalState {
+                        action_name: "Selective full update cycle".to_string(),
+                        default_text,
+                        input: Input::default(),
+                        flow: InputFlow::SelectiveFullCycle(inputs),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                    });
+                } else {
+                    self.pending_external_task = ExternalTask::SelectiveFullCycleSwitchOnly(inputs);
+                }
             }
         }
     }
@@ -1143,7 +1243,162 @@ impl App {
             InputFlow::RestoreFile(hash, file) => {
                 self.pending_external_task = ExternalTask::RestoreCommitAndSwitch(hash, file, msg);
             }
+            InputFlow::SelectiveFullCycle(inputs) => {
+                self.pending_external_task =
+                    ExternalTask::SelectiveFullCycleCommitAndSwitch(inputs, msg);
+            }
         }
+    }
+
+    pub fn start_selective_update(&mut self, mode: SelectiveMode) {
+        match nix::get_flake_inputs(&self.flake_dir) {
+            Ok(inputs) if !inputs.is_empty() => {
+                let len = inputs.len();
+                self.screen = Screen::SelectiveUpdate(SelectiveUpdateState {
+                    mode,
+                    inputs,
+                    selected: vec![false; len],
+                    cursor: 0,
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                });
+            }
+            Ok(_) | Err(_) => {
+                self.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "NO FLAKE INPUTS FOUND".to_string(),
+                    message: format!(
+                        "Could not locate inputs in flake.lock or flake.nix within {}.",
+                        self.flake_dir.display()
+                    ),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                });
+            }
+        }
+    }
+
+    fn handle_selective_update_key(&mut self, key: KeyEvent) {
+        let (mode, _inputs_len, _cursor, selected_inputs, cancel_screen) =
+            if let Screen::SelectiveUpdate(ref mut state) = self.screen {
+                if self.config.keybindings.is_back(&key) || self.config.keybindings.is_quit(&key) {
+                    self.screen = *state.return_screen.clone();
+                    return;
+                }
+
+                if state.inputs.is_empty() {
+                    return;
+                }
+
+                if self.config.keybindings.is_up(&key) {
+                    if state.cursor > 0 {
+                        state.cursor -= 1;
+                    } else {
+                        state.cursor = state.inputs.len().saturating_sub(1);
+                    }
+                    return;
+                } else if self.config.keybindings.is_down(&key) {
+                    if state.cursor + 1 < state.inputs.len() {
+                        state.cursor += 1;
+                    } else {
+                        state.cursor = 0;
+                    }
+                    return;
+                } else if key.code == KeyCode::Char(' ') {
+                    if let Some(val) = state.selected.get_mut(state.cursor) {
+                        *val = !*val;
+                    }
+                    return;
+                } else if key.code == KeyCode::Char('a') {
+                    state.selected.fill(true);
+                    return;
+                } else if key.code == KeyCode::Char('n') {
+                    state.selected.fill(false);
+                    return;
+                } else if key.code == KeyCode::Char('i') {
+                    for s in &mut state.selected {
+                        *s = !*s;
+                    }
+                    return;
+                } else if self.config.keybindings.is_select(&key) {
+                    let target: Vec<String> = match state.mode {
+                        SelectiveMode::Include => state
+                            .inputs
+                            .iter()
+                            .enumerate()
+                            .filter(|(idx, _)| state.selected.get(*idx).copied().unwrap_or(false))
+                            .map(|(_, inp)| inp.name.clone())
+                            .collect(),
+                        SelectiveMode::Exclude => state
+                            .inputs
+                            .iter()
+                            .enumerate()
+                            .filter(|(idx, _)| !state.selected.get(*idx).copied().unwrap_or(false))
+                            .map(|(_, inp)| inp.name.clone())
+                            .collect(),
+                    };
+
+                    (
+                        state.mode,
+                        state.inputs.len(),
+                        state.cursor,
+                        target,
+                        Box::new(Screen::SelectiveUpdate(state.clone())),
+                    )
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            };
+
+        if selected_inputs.is_empty() {
+            let msg = match mode {
+                SelectiveMode::Include => {
+                    "No inputs were selected. Press Space to select at least one input to update."
+                }
+                SelectiveMode::Exclude => {
+                    "All inputs were excluded. Uncheck at least one input to update."
+                }
+            };
+            self.screen = Screen::Result(ResultState {
+                is_success: false,
+                title: "EMPTY SELECTION".to_string(),
+                message: msg.to_string(),
+                return_screen: cancel_screen,
+            });
+            return;
+        }
+
+        let count = selected_inputs.len();
+        let title = format!("{}  UPDATE {} INPUT(S)", theme::ICON_PACKAGE, count);
+        let list_preview = if count <= 4 {
+            selected_inputs.join(", ")
+        } else {
+            format!(
+                "{}, and {} more",
+                selected_inputs[..3].join(", "),
+                count - 3
+            )
+        };
+
+        let mode_desc = match mode {
+            SelectiveMode::Include => format!("Target inputs: {list_preview}"),
+            SelectiveMode::Exclude => {
+                format!("Target inputs (excluding unchecked): {list_preview}")
+            }
+        };
+
+        self.screen = Screen::Confirm(ConfirmState {
+            title,
+            lines: vec![mode_desc, "Choose how to proceed:".to_string()],
+            affirmative_label: "Lockfile Only".to_string(),
+            negative_label: "Full Cycle (Update & Switch)".to_string(),
+            selected_button: 0,
+            is_danger: false,
+            on_confirm: PendingAction::SelectiveUpdateLockfile(selected_inputs.clone()),
+            on_secondary: Some(PendingAction::SelectiveFullCycle(selected_inputs)),
+            return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+            on_cancel_screen: Some(cancel_screen),
+        });
     }
 
     pub fn update_commit_preview(&mut self) {
@@ -1283,6 +1538,7 @@ impl App {
                     selected_button: 0,
                     is_danger: true,
                     on_confirm: PendingAction::HardResetExecute(selected_hash),
+                    on_secondary: None,
                     return_screen,
                     on_cancel_screen: None,
                 });
@@ -1314,6 +1570,7 @@ impl App {
                     selected_button: 0,
                     is_danger: false,
                     on_confirm: PendingAction::TrimHistorySoftReset(selected_hash),
+                    on_secondary: None,
                     return_screen,
                     on_cancel_screen: None,
                 });
@@ -1515,6 +1772,7 @@ impl App {
                     selected_button: 0,
                     is_danger: false,
                     on_confirm: PendingAction::RestoreFileExecute(target_ref, file),
+                    on_secondary: None,
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                     on_cancel_screen: None,
                 });
@@ -1970,5 +2228,169 @@ mod tests {
                 matches!(state.on_confirm, PendingAction::RestoreFileExecute(ref h, ref f) if h == "HEAD~1" && f == "configuration.nix")
             );
         }
+    }
+
+    #[test]
+    fn test_selective_update_include_flow() {
+        let mut app = App::new();
+        let inputs = vec![
+            crate::actions::nix::FlakeInput {
+                name: "nixpkgs".to_string(),
+                details: "NixOS/nixpkgs@abcdef1".to_string(),
+            },
+            crate::actions::nix::FlakeInput {
+                name: "home-manager".to_string(),
+                details: "nix-community/home-manager@1234567".to_string(),
+            },
+            crate::actions::nix::FlakeInput {
+                name: "hyprland".to_string(),
+                details: "hyprwm/Hyprland".to_string(),
+            },
+        ];
+
+        app.screen = Screen::SelectiveUpdate(SelectiveUpdateState {
+            mode: SelectiveMode::Include,
+            inputs,
+            selected: vec![false, false, false],
+            cursor: 0,
+            return_screen: Box::new(Screen::TopMenu),
+        });
+
+        // Space toggles index 0 (nixpkgs)
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert!(state.selected[0]);
+            assert!(!state.selected[1]);
+            assert!(!state.selected[2]);
+        }
+
+        // Down arrow moves cursor to home-manager
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert_eq!(state.cursor, 1);
+        }
+
+        // Enter submits selection
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::Confirm(_)));
+        if let Screen::Confirm(ref state) = app.screen {
+            assert_eq!(state.selected_button, 0);
+            assert!(matches!(
+                state.on_confirm,
+                PendingAction::SelectiveUpdateLockfile(ref inps) if inps == &vec!["nixpkgs".to_string()]
+            ));
+            assert!(matches!(
+                state.on_secondary,
+                Some(PendingAction::SelectiveFullCycle(ref inps)) if inps == &vec!["nixpkgs".to_string()]
+            ));
+        }
+
+        // Select button 0 (Lockfile only)
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::SelectiveUpdateFlakeOnly(ref inps) if inps == &vec!["nixpkgs".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_selective_update_exclude_flow() {
+        let mut app = App::new();
+        let inputs = vec![
+            crate::actions::nix::FlakeInput {
+                name: "nixpkgs".to_string(),
+                details: "NixOS/nixpkgs@abcdef1".to_string(),
+            },
+            crate::actions::nix::FlakeInput {
+                name: "home-manager".to_string(),
+                details: "nix-community/home-manager@1234567".to_string(),
+            },
+        ];
+
+        app.screen = Screen::SelectiveUpdate(SelectiveUpdateState {
+            mode: SelectiveMode::Exclude,
+            inputs,
+            selected: vec![false, false],
+            cursor: 0,
+            return_screen: Box::new(Screen::TopMenu),
+        });
+
+        // In Exclude mode, check nixpkgs (means exclude nixpkgs)
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert!(state.selected[0]);
+        }
+
+        // Enter submits: target should be everything NOT selected (home-manager)
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::Confirm(_)));
+        if let Screen::Confirm(ref state) = app.screen {
+            assert!(matches!(
+                state.on_confirm,
+                PendingAction::SelectiveUpdateLockfile(ref inps) if inps == &vec!["home-manager".to_string()]
+            ));
+        }
+
+        // Switch to button 1 (Full Cycle) and press Enter
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        if let Screen::Confirm(ref state) = app.screen {
+            assert_eq!(state.selected_button, 1);
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // If is_git is true, it prompts for commit message via InputModal
+        assert!(matches!(app.screen, Screen::InputModal(_)));
+        // Pressing Enter on InputModal submits the message and triggers SelectiveFullCycleCommitAndSwitch
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::SelectiveFullCycleCommitAndSwitch(ref inps, _) if inps == &vec!["home-manager".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_selective_update_hotkeys() {
+        let mut app = App::new();
+        let inputs = vec![
+            crate::actions::nix::FlakeInput {
+                name: "pkg1".to_string(),
+                details: String::new(),
+            },
+            crate::actions::nix::FlakeInput {
+                name: "pkg2".to_string(),
+                details: String::new(),
+            },
+        ];
+
+        app.screen = Screen::SelectiveUpdate(SelectiveUpdateState {
+            mode: SelectiveMode::Include,
+            inputs,
+            selected: vec![false, false],
+            cursor: 0,
+            return_screen: Box::new(Screen::TopMenu),
+        });
+
+        // 'a' selects all
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert_eq!(state.selected, vec![true, true]);
+        }
+
+        // 'n' deselects all
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert_eq!(state.selected, vec![false, false]);
+        }
+
+        // 'i' inverts selection
+        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert_eq!(state.selected, vec![true, true]);
+        }
+
+        // Submitting when empty shows error
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::Result(ref res) if !res.is_success));
     }
 }

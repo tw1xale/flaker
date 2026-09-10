@@ -75,7 +75,123 @@ pub fn nixos_list_generations(dir: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Updates the flake lockfile.
+/// Represents an individual input defined in flake.lock or flake.nix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlakeInput {
+    pub name: String,
+    pub details: String,
+}
+
+/// Discovers top-level inputs from `flake.lock` (or fallback `flake.nix`).
+pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
+    let lock_path = dir.join("flake.lock");
+    if lock_path.exists() {
+        let content = fs::read_to_string(&lock_path)
+            .with_context(|| format!("Failed to read {}", lock_path.display()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&content).with_context(|| "Failed to parse flake.lock as JSON")?;
+
+        if let Some(root_inputs) = v
+            .get("nodes")
+            .and_then(|n| n.get("root"))
+            .and_then(|r| r.get("inputs"))
+            .and_then(|i| i.as_object())
+        {
+            let mut inputs = Vec::new();
+            for (name, node_target) in root_inputs {
+                let mut details = String::new();
+                if let Some(target_key) = node_target.as_str()
+                    && let Some(node) = v.get("nodes").and_then(|n| n.get(target_key))
+                    && let Some(locked) = node.get("locked")
+                {
+                    let typ = locked.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    let owner = locked.get("owner").and_then(|o| o.as_str());
+                    let repo = locked.get("repo").and_then(|r| r.as_str());
+                    let rev = locked.get("rev").and_then(|r| r.as_str());
+
+                    if let (Some(o), Some(r)) = (owner, repo) {
+                        if let Some(rev) = rev {
+                            let short_rev: String = rev.chars().take(7).collect();
+                            details = format!("{o}/{r}@{short_rev}");
+                        } else {
+                            details = format!("{o}/{r}");
+                        }
+                    } else if let Some(url) = locked.get("url").and_then(|u| u.as_str()) {
+                        details = url.to_string();
+                    } else if !typ.is_empty() {
+                        details = typ.to_string();
+                    }
+                } else if let Some(arr) = node_target.as_array() {
+                    let path = arr
+                        .iter()
+                        .filter_map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    details = format!("follows {path}");
+                }
+
+                inputs.push(FlakeInput {
+                    name: name.clone(),
+                    details,
+                });
+            }
+            inputs.sort_by(|a, b| a.name.cmp(&b.name));
+            if !inputs.is_empty() {
+                return Ok(inputs);
+            }
+        }
+    }
+
+    // Fallback: parse flake.nix if flake.lock is missing or empty
+    let flake_nix_path = dir.join("flake.nix");
+    if flake_nix_path.exists() {
+        let content = fs::read_to_string(&flake_nix_path).unwrap_or_default();
+        let mut names = Vec::new();
+        let mut in_inputs_block = false;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("inputs = {") || trimmed.starts_with("inputs={") {
+                in_inputs_block = true;
+                continue;
+            }
+            if in_inputs_block && (trimmed.starts_with("};") || trimmed.starts_with('}')) {
+                in_inputs_block = false;
+            }
+            if in_inputs_block {
+                if let Some(name) = trimmed.split(['.', '=']).next() {
+                    let name = name.trim();
+                    if !name.is_empty()
+                        && !name.starts_with('#')
+                        && !names.contains(&name.to_string())
+                    {
+                        names.push(name.to_string());
+                    }
+                }
+            } else if let Some(rest) = trimmed.strip_prefix("inputs.")
+                && let Some(name) = rest.split(['.', '=']).next()
+            {
+                let name = name.trim();
+                if !name.is_empty() && !names.contains(&name.to_string()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        if !names.is_empty() {
+            names.sort();
+            return Ok(names
+                .into_iter()
+                .map(|name| FlakeInput {
+                    name,
+                    details: "from flake.nix".to_string(),
+                })
+                .collect());
+        }
+    }
+
+    anyhow::bail!("No inputs found in flake.lock or flake.nix")
+}
+
+/// Updates the flake lockfile (all inputs).
 pub fn nix_flake_update(dir: &Path, needs_sudo: bool) -> Result<()> {
     let mut cmd = make_cmd("nix", dir, needs_sudo);
     cmd.args(["flake", "update"]);
@@ -84,6 +200,34 @@ pub fn nix_flake_update(dir: &Path, needs_sudo: bool) -> Result<()> {
     let status = run_visible(
         "UPDATING FLAKE LOCKFILE",
         &format!("{prefix}nix flake update"),
+        &mut cmd,
+    )
+    .context("Failed to execute nix flake update")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("nix flake update exited with status: {status}");
+    }
+}
+
+/// Updates specific inputs of the flake lockfile.
+pub fn nix_flake_update_inputs(dir: &Path, needs_sudo: bool, inputs: &[String]) -> Result<()> {
+    if inputs.is_empty() {
+        return nix_flake_update(dir, needs_sudo);
+    }
+
+    let mut cmd = make_cmd("nix", dir, needs_sudo);
+    cmd.args(["flake", "update"]);
+    for input in inputs {
+        cmd.arg(input);
+    }
+
+    let prefix = if needs_sudo { "sudo " } else { "" };
+    let inputs_str = inputs.join(" ");
+    let status = run_visible(
+        "UPDATING FLAKE INPUTS",
+        &format!("{prefix}nix flake update {inputs_str}"),
         &mut cmd,
     )
     .context("Failed to execute nix flake update")?;
@@ -137,4 +281,99 @@ pub fn cleanup_nix_store() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_flake_inputs_from_lock() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "flaker_test_nix_inputs_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let lock_content = r#"{
+  "nodes": {
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_node",
+        "home-manager": "hm_node",
+        "subinput": ["nixpkgs"]
+      }
+    },
+    "nixpkgs_node": {
+      "locked": {
+        "type": "github",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "abcdef1234567890"
+      }
+    },
+    "hm_node": {
+      "locked": {
+        "type": "github",
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "1234567abcdef"
+      }
+    }
+  },
+  "version": 7
+}"#;
+        let lock_path = temp_dir.join("flake.lock");
+        std::fs::write(&lock_path, lock_content).unwrap();
+
+        let inputs = get_flake_inputs(&temp_dir).expect("parsing lock should succeed");
+        assert_eq!(inputs.len(), 3);
+
+        let nixpkgs = inputs.iter().find(|i| i.name == "nixpkgs").unwrap();
+        assert_eq!(nixpkgs.details, "NixOS/nixpkgs@abcdef1");
+
+        let hm = inputs.iter().find(|i| i.name == "home-manager").unwrap();
+        assert_eq!(hm.details, "nix-community/home-manager@1234567");
+
+        let sub = inputs.iter().find(|i| i.name == "subinput").unwrap();
+        assert_eq!(sub.details, "follows nixpkgs");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_get_flake_inputs_fallback_to_nix() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "flaker_test_nix_fallback_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let flake_nix = r#"
+{
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    disko.url = "github:nix-community/disko";
+  };
+  outputs = { self, nixpkgs, disko }: { };
+}
+"#;
+        std::fs::write(temp_dir.join("flake.nix"), flake_nix).unwrap();
+
+        let inputs = get_flake_inputs(&temp_dir).expect("parsing flake.nix should succeed");
+        assert_eq!(inputs.len(), 2);
+        let names: Vec<_> = inputs.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"nixpkgs"));
+        assert!(names.contains(&"disko"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
