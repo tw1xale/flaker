@@ -134,6 +134,17 @@ pub struct PagerState {
 }
 
 #[derive(Debug, Clone)]
+pub struct ClosureDiffState {
+    pub items: Vec<crate::actions::nix::ClosureDiffItem>,
+    pub filtered_indices: Vec<usize>,
+    pub search_input: Input,
+    pub cursor: usize,
+    pub on_confirm_task: Option<Box<ExternalTask>>,
+    pub return_screen: Box<Screen>,
+    pub title_suffix: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ResultState {
     pub is_success: bool,
     pub title: String,
@@ -152,6 +163,7 @@ pub enum ScreenTag {
     Pager,
     Result,
     SelectiveUpdate,
+    ClosureDiff,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +177,7 @@ pub enum Screen {
     Pager(PagerState),
     Result(ResultState),
     SelectiveUpdate(SelectiveUpdateState),
+    ClosureDiff(ClosureDiffState),
 }
 
 impl Screen {
@@ -179,6 +192,7 @@ impl Screen {
             Screen::Pager(_) => ScreenTag::Pager,
             Screen::Result(_) => ScreenTag::Result,
             Screen::SelectiveUpdate(_) => ScreenTag::SelectiveUpdate,
+            Screen::ClosureDiff(_) => ScreenTag::ClosureDiff,
         }
     }
 }
@@ -204,6 +218,34 @@ pub enum ExternalTask {
     RestoreFile(String, String),
     RestorePatch(String, Option<String>),
     RestoreCommitAndSwitch(String, String, String),
+    BuildAndPreviewClosureDiff,
+    ApplySwitchedSystem {
+        return_screen: SubMenuKind,
+        success_title: String,
+        success_message: String,
+    },
+    ApplyCommitAndSwitch {
+        msg: String,
+        return_screen: SubMenuKind,
+        success_title: String,
+        success_message: String,
+    },
+    ApplySelectiveFullCycle {
+        inputs: Vec<String>,
+        msg: Option<String>,
+    },
+    ApplySoftRevertSwitch {
+        hash: String,
+        msg: String,
+    },
+    ApplyRestoreFileSwitch {
+        hash: String,
+        file: String,
+        msg: String,
+    },
+    ApplyHardResetSwitch {
+        hash: String,
+    },
 }
 
 pub struct App {
@@ -340,6 +382,7 @@ impl App {
                                 theme::ICON_PATCH
                             ),
                             format!("{}  Test Build (Dry Run / Build)", theme::ICON_TEST_BUILD),
+                            format!("{}  Preview Closure Diff (Build & Diff)", theme::ICON_DIFF),
                             format!("{}  Back", theme::ICON_BACK),
                         ],
                     ),
@@ -527,6 +570,10 @@ impl App {
             Screen::SelectiveUpdate(state) => {
                 render_selective(frame, area, state, &self.theme);
             }
+
+            Screen::ClosureDiff(state) => {
+                crate::ui::closure_diff::render_closure_diff(frame, area, state, &self.theme);
+            }
         }
     }
 
@@ -541,6 +588,7 @@ impl App {
             ScreenTag::Pager => self.handle_pager_key(key),
             ScreenTag::Result => self.handle_result_key(key),
             ScreenTag::SelectiveUpdate => self.handle_selective_update_key(key),
+            ScreenTag::ClosureDiff => self.handle_closure_diff_key(key),
         }
     }
 
@@ -586,6 +634,11 @@ impl App {
                 }
                 ScreenTag::SelectiveUpdate => {
                     if let Screen::SelectiveUpdate(ref mut state) = self.screen {
+                        state.cursor = state.cursor.saturating_sub(1);
+                    }
+                }
+                ScreenTag::ClosureDiff => {
+                    if let Screen::ClosureDiff(ref mut state) = self.screen {
                         state.cursor = state.cursor.saturating_sub(1);
                     }
                 }
@@ -656,6 +709,13 @@ impl App {
                         state.cursor += 1;
                     }
                 }
+                ScreenTag::ClosureDiff => {
+                    if let Screen::ClosureDiff(ref mut state) = self.screen
+                        && state.cursor + 1 < state.filtered_indices.len()
+                    {
+                        state.cursor += 1;
+                    }
+                }
                 ScreenTag::TopMenu if self.top_menu_index + 1 < 4 => {
                     self.top_menu_index += 1;
                 }
@@ -672,7 +732,7 @@ impl App {
 
     pub fn submenu_item_count(&self, kind: SubMenuKind) -> usize {
         match kind {
-            SubMenuKind::Updates => 6,
+            SubMenuKind::Updates => 7,
             SubMenuKind::SelectiveUpdate => 3,
             SubMenuKind::Maintenance => 3,
             SubMenuKind::GitHistory => 6,
@@ -807,6 +867,7 @@ impl App {
                     self.screen = Screen::SubMenu(SubMenuKind::SelectiveUpdate);
                 }
                 4 => self.start_test_build(),
+                5 => self.start_preview_closure_diff(),
                 _ => self.screen = Screen::TopMenu,
             },
             SubMenuKind::SelectiveUpdate => match index {
@@ -855,7 +916,18 @@ impl App {
     }
 
     fn start_update_lockfile(&mut self) {
-        self.pending_external_task = ExternalTask::UpdateFlakeOnly;
+        if self.is_git {
+            let default_text = self.config.commit_templates.flake_update.clone();
+            self.screen = Screen::InputModal(InputModalState {
+                action_name: "Updating flake lockfile".to_string(),
+                default_text,
+                input: Input::default(),
+                flow: InputFlow::Lockfile,
+                return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+            });
+        } else {
+            self.pending_external_task = ExternalTask::UpdateFlakeOnly;
+        }
     }
 
     fn start_full_cycle(&mut self) {
@@ -875,6 +947,98 @@ impl App {
 
     fn start_test_build(&mut self) {
         self.pending_external_task = ExternalTask::TestBuild;
+    }
+
+    fn start_preview_closure_diff(&mut self) {
+        self.pending_external_task = ExternalTask::BuildAndPreviewClosureDiff;
+    }
+
+    fn handle_closure_diff_key(&mut self, key: KeyEvent) {
+        let Screen::ClosureDiff(ref mut state) = self.screen else {
+            return;
+        };
+
+        if key.code == KeyCode::Esc {
+            if !state.search_input.value().is_empty() {
+                state.search_input = Input::default();
+                state.filtered_indices = (0..state.items.len()).collect();
+                state.cursor = 0;
+                return;
+            }
+            let _ = std::fs::remove_file(self.flake_dir.join("result"));
+            self.screen = *state.return_screen.clone();
+            return;
+        }
+
+        if self.config.keybindings.is_select(&key) || key.code == KeyCode::Enter {
+            let _ = std::fs::remove_file(self.flake_dir.join("result"));
+            if let Some(task) = state.on_confirm_task.take() {
+                self.pending_external_task = *task;
+            } else {
+                self.screen = *state.return_screen.clone();
+            }
+            return;
+        }
+
+        if self.config.keybindings.is_up(&key) {
+            if state.cursor > 0 {
+                state.cursor -= 1;
+            } else if !state.filtered_indices.is_empty() {
+                state.cursor = state.filtered_indices.len().saturating_sub(1);
+            }
+            return;
+        }
+
+        if self.config.keybindings.is_down(&key) {
+            if state.cursor + 1 < state.filtered_indices.len() {
+                state.cursor += 1;
+            } else {
+                state.cursor = 0;
+            }
+            return;
+        }
+
+        if key.code == KeyCode::PageUp {
+            state.cursor = state.cursor.saturating_sub(10);
+            return;
+        }
+
+        if key.code == KeyCode::PageDown {
+            if !state.filtered_indices.is_empty() {
+                state.cursor = (state.cursor + 10).min(state.filtered_indices.len().saturating_sub(1));
+            }
+            return;
+        }
+
+        if key.code == KeyCode::Home {
+            state.cursor = 0;
+            return;
+        }
+
+        if key.code == KeyCode::End {
+            if !state.filtered_indices.is_empty() {
+                state.cursor = state.filtered_indices.len().saturating_sub(1);
+            }
+            return;
+        }
+
+        let req = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key));
+        if let Some(req) = req
+            && state.search_input.handle(req).is_some()
+        {
+            let query = state.search_input.value().to_lowercase();
+                state.filtered_indices = state
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| {
+                        item.package.to_lowercase().contains(&query)
+                            || item.raw.to_lowercase().contains(&query)
+                    })
+                    .map(|(idx, _)| idx)
+                    .collect();
+                state.cursor = 0;
+        }
     }
 
     fn start_clean_store(&mut self) {
@@ -2490,4 +2654,155 @@ mod tests {
             assert_eq!(state.cursor, 2);
         }
     }
+
+    #[test]
+    fn test_closure_diff_navigation_and_cancel() {
+        let mut app = App::new();
+        let items = vec![
+            crate::actions::nix::ClosureDiffItem {
+                package: "firefox".to_string(),
+                before_version: Some("134.0".to_string()),
+                after_version: Some("135.0".to_string()),
+                size_delta: Some("+10 MiB".to_string()),
+                kind: crate::actions::nix::DiffKind::Updated,
+                raw: "firefox: 134.0 → 135.0".to_string(),
+            },
+            crate::actions::nix::ClosureDiffItem {
+                package: "neovim".to_string(),
+                before_version: None,
+                after_version: Some("0.10.4".to_string()),
+                size_delta: Some("+50 MiB".to_string()),
+                kind: crate::actions::nix::DiffKind::Added,
+                raw: "neovim: ∅ → 0.10.4".to_string(),
+            },
+        ];
+
+        app.screen = Screen::ClosureDiff(ClosureDiffState {
+            items,
+            filtered_indices: vec![0, 1],
+            search_input: Input::default(),
+            cursor: 0,
+            on_confirm_task: Some(Box::new(ExternalTask::ApplySwitchedSystem {
+                return_screen: SubMenuKind::Updates,
+                success_title: "SUCCESS".to_string(),
+                success_message: "Done".to_string(),
+            })),
+            return_screen: Box::new(Screen::TopMenu),
+            title_suffix: "Test Preview".to_string(),
+        });
+
+        // Down moves cursor to 1
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.cursor, 1);
+        }
+
+        // Down at bottom wraps to 0
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.cursor, 0);
+        }
+
+        // Up at top wraps to 1
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.cursor, 1);
+        }
+
+        // Esc cancels and restores return_screen (Screen::TopMenu)
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::TopMenu));
+    }
+
+    #[test]
+    fn test_closure_diff_filter_and_clear() {
+        let mut app = App::new();
+        let items = vec![
+            crate::actions::nix::ClosureDiffItem {
+                package: "firefox".to_string(),
+                before_version: Some("134.0".to_string()),
+                after_version: Some("135.0".to_string()),
+                size_delta: None,
+                kind: crate::actions::nix::DiffKind::Updated,
+                raw: "firefox: 134.0 → 135.0".to_string(),
+            },
+            crate::actions::nix::ClosureDiffItem {
+                package: "neovim".to_string(),
+                before_version: None,
+                after_version: Some("0.10.4".to_string()),
+                size_delta: None,
+                kind: crate::actions::nix::DiffKind::Added,
+                raw: "neovim: ∅ → 0.10.4".to_string(),
+            },
+        ];
+
+        app.screen = Screen::ClosureDiff(ClosureDiffState {
+            items,
+            filtered_indices: vec![0, 1],
+            search_input: Input::default(),
+            cursor: 0,
+            on_confirm_task: None,
+            return_screen: Box::new(Screen::TopMenu),
+            title_suffix: "Test".to_string(),
+        });
+
+        // Type "neo"
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.search_input.value(), "neo");
+            assert_eq!(state.filtered_indices.len(), 1);
+            assert_eq!(state.filtered_indices[0], 1); // neovim index
+        }
+
+        // Esc clears search filter first instead of closing
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.search_input.value(), "");
+            assert_eq!(state.filtered_indices.len(), 2);
+        }
+
+        // Next Esc exits to return_screen
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.screen, Screen::TopMenu));
+    }
+
+    #[test]
+    fn test_closure_diff_confirm_triggers_task() {
+        let mut app = App::new();
+        let items = vec![crate::actions::nix::ClosureDiffItem {
+            package: "curl".to_string(),
+            before_version: Some("8.10.0".to_string()),
+            after_version: Some("8.11.0".to_string()),
+            size_delta: None,
+            kind: crate::actions::nix::DiffKind::Updated,
+            raw: "curl: 8.10.0 → 8.11.0".to_string(),
+        }];
+
+        let task = ExternalTask::ApplySwitchedSystem {
+            return_screen: SubMenuKind::Updates,
+            success_title: "DONE".to_string(),
+            success_message: "Activated".to_string(),
+        };
+
+        app.screen = Screen::ClosureDiff(ClosureDiffState {
+            items,
+            filtered_indices: vec![0],
+            search_input: Input::default(),
+            cursor: 0,
+            on_confirm_task: Some(Box::new(task.clone())),
+            return_screen: Box::new(Screen::TopMenu),
+            title_suffix: "Switch".to_string(),
+        });
+
+        // Enter confirms switch
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::ApplySwitchedSystem { .. }
+        ));
+    }
+
 }

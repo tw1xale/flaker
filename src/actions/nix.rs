@@ -1,7 +1,7 @@
 use crate::actions::{make_cmd, run_silent, run_visible};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Reads the current active NixOS system generation number (read-only, no sudo).
@@ -34,6 +34,164 @@ pub fn nixos_rebuild_switch(flake_target: &str, dir: &Path) -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!("nixos-rebuild switch exited with status: {status}");
+    }
+}
+
+/// Type of difference in closure packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffKind {
+    Added,
+    Removed,
+    Updated,
+    Rebuilt,
+}
+
+/// Represents an individual package change between two Nix closures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureDiffItem {
+    pub package: String,
+    pub before_version: Option<String>,
+    pub after_version: Option<String>,
+    pub size_delta: Option<String>,
+    pub kind: DiffKind,
+    pub raw: String,
+}
+
+/// Parses the output of `nix store diff-closures`.
+pub fn parse_diff_closures_output(output: &str) -> Vec<ClosureDiffItem> {
+    let mut items = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("warning:")
+            || trimmed.starts_with("error:")
+            || trimmed.starts_with("this derivation")
+            || trimmed.starts_with("building")
+        {
+            continue;
+        }
+
+        let Some((pkg, rest)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let package = pkg.trim().to_string();
+        let rest = rest.trim();
+
+        if let Some((left, right)) = rest.split_once('→') {
+            let left = left.trim();
+            let right = right.trim();
+
+            let (new_ver, size_delta) = if let Some((ver_part, size_part)) = right.rsplit_once(',')
+            {
+                let sp = size_part.trim();
+                if sp.contains('B') || sp.starts_with('+') || sp.starts_with('-') {
+                    (ver_part.trim(), Some(sp.to_string()))
+                } else {
+                    (right, None)
+                }
+            } else {
+                (right, None)
+            };
+
+            let kind = if left == "∅" {
+                DiffKind::Added
+            } else if new_ver == "∅" {
+                DiffKind::Removed
+            } else {
+                DiffKind::Updated
+            };
+
+            let before_version = if left == "∅" {
+                None
+            } else {
+                Some(left.to_string())
+            };
+            let after_version = if new_ver == "∅" {
+                None
+            } else {
+                Some(new_ver.to_string())
+            };
+
+            items.push(ClosureDiffItem {
+                package,
+                before_version,
+                after_version,
+                size_delta,
+                kind,
+                raw: trimmed.to_string(),
+            });
+        } else {
+            items.push(ClosureDiffItem {
+                package,
+                before_version: None,
+                after_version: None,
+                size_delta: if !rest.is_empty() {
+                    Some(rest.to_string())
+                } else {
+                    None
+                },
+                kind: DiffKind::Rebuilt,
+                raw: trimmed.to_string(),
+            });
+        }
+    }
+    items
+}
+
+/// Runs a build of the NixOS configuration, returning the canonical path of the built system closure.
+pub fn nixos_rebuild_build_closure(flake_target: &str, dir: &Path) -> Result<PathBuf> {
+    let mut cmd = Command::new("sudo");
+    cmd.args(["nixos-rebuild", "build", "--flake", flake_target])
+        .current_dir(dir);
+
+    let status = run_visible(
+        "BUILDING CONFIGURATION FOR PREVIEW",
+        &format!("sudo nixos-rebuild build --flake {flake_target}"),
+        &mut cmd,
+    )
+    .context("Failed to execute nixos-rebuild build")?;
+
+    if !status.success() {
+        anyhow::bail!("nixos-rebuild build exited with status: {status}");
+    }
+
+    let result_link = dir.join("result");
+    if result_link.exists() {
+        let canonical = fs::canonicalize(&result_link)
+            .with_context(|| format!("Failed to canonicalize {}", result_link.display()))?;
+        Ok(canonical)
+    } else {
+        anyhow::bail!("Build succeeded but 'result' symlink was not found in {}", dir.display());
+    }
+}
+
+/// Runs `nix store diff-closures` between two store paths (read-only, no sudo).
+pub fn diff_closures(before: &Path, after: &Path) -> Result<Vec<ClosureDiffItem>> {
+    let mut cmd = Command::new("nix");
+    cmd.args([
+        "store",
+        "diff-closures",
+        &before.to_string_lossy(),
+        &after.to_string_lossy(),
+    ]);
+
+    let output = run_silent(&mut cmd).context("Failed to execute nix store diff-closures")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("nix store diff-closures exited with error: {stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_diff_closures_output(&stdout))
+}
+
+/// Computes closure diff against the active system (/run/current-system).
+pub fn get_system_closure_diff(new_closure: &Path) -> Result<Vec<ClosureDiffItem>> {
+    let current_system = Path::new("/run/current-system");
+    if current_system.exists() {
+        diff_closures(current_system, new_closure)
+    } else {
+        Ok(Vec::new())
     }
 }
 
@@ -400,4 +558,57 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_parse_diff_closures_output() {
+        let sample = r#"
+antigravity-ide: 2.5.5 → ∅, -720.7 MiB
+electron: 43.4.1 → 43.5.1
+electron-unwrapped: 43.4.1 → 43.5.1, 2.4 MiB
+kdeconnect-kde: ∅ → 20.08.2, +6599.7 KiB
+flaker: 138.4 KiB
+fish: 4.9.2, 4.9.2_fish → 4.9.3, 4.9.3_fish
+warning: some warning
+"#;
+        let items = parse_diff_closures_output(sample);
+        assert_eq!(items.len(), 6);
+
+        // 1. antigravity-ide (Removed)
+        assert_eq!(items[0].package, "antigravity-ide");
+        assert_eq!(items[0].kind, DiffKind::Removed);
+        assert_eq!(items[0].before_version.as_deref(), Some("2.5.5"));
+        assert_eq!(items[0].after_version, None);
+        assert_eq!(items[0].size_delta.as_deref(), Some("-720.7 MiB"));
+
+        // 2. electron (Updated, no size)
+        assert_eq!(items[1].package, "electron");
+        assert_eq!(items[1].kind, DiffKind::Updated);
+        assert_eq!(items[1].before_version.as_deref(), Some("43.4.1"));
+        assert_eq!(items[1].after_version.as_deref(), Some("43.5.1"));
+        assert_eq!(items[1].size_delta, None);
+
+        // 3. electron-unwrapped (Updated, with size)
+        assert_eq!(items[2].package, "electron-unwrapped");
+        assert_eq!(items[2].kind, DiffKind::Updated);
+        assert_eq!(items[2].size_delta.as_deref(), Some("2.4 MiB"));
+
+        // 4. kdeconnect-kde (Added)
+        assert_eq!(items[3].package, "kdeconnect-kde");
+        assert_eq!(items[3].kind, DiffKind::Added);
+        assert_eq!(items[3].before_version, None);
+        assert_eq!(items[3].after_version.as_deref(), Some("20.08.2"));
+        assert_eq!(items[3].size_delta.as_deref(), Some("+6599.7 KiB"));
+
+        // 5. flaker (Rebuilt)
+        assert_eq!(items[4].package, "flaker");
+        assert_eq!(items[4].kind, DiffKind::Rebuilt);
+        assert_eq!(items[4].size_delta.as_deref(), Some("138.4 KiB"));
+
+        // 6. fish (Multiple versions in tag)
+        assert_eq!(items[5].package, "fish");
+        assert_eq!(items[5].kind, DiffKind::Updated);
+        assert_eq!(items[5].before_version.as_deref(), Some("4.9.2, 4.9.2_fish"));
+        assert_eq!(items[5].after_version.as_deref(), Some("4.9.3, 4.9.3_fish"));
+    }
+
 }
