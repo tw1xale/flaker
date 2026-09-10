@@ -148,8 +148,8 @@ fn execute_external_task(
                 });
             }
             Ok(closure_path) => {
-                let items = match nix::get_system_closure_diff(&closure_path) {
-                    Ok(items) => items,
+                let diff_result = match nix::get_system_closure_diff(&closure_path) {
+                    Ok(diff) => diff,
                     Err(err) => {
                         nix::clean_result_link(flake_dir, needs_sudo);
                         app.screen = Screen::Result(ResultState {
@@ -163,12 +163,13 @@ fn execute_external_task(
                         return;
                     }
                 };
-                let filtered_indices = (0..items.len()).collect();
+                let filtered_indices = (0..diff_result.items.len()).collect();
                 app.screen = Screen::ClosureDiff(crate::app::ClosureDiffState {
-                    items,
+                    items: diff_result.items,
                     filtered_indices,
                     search_input: tui_input::Input::default(),
                     scroll_offset: 0,
+                    is_identical_closure: diff_result.is_identical_closure,
                     on_confirm_task: Some(Box::new(on_confirm_task)),
                     return_screen: Box::new(return_screen),
                     title_suffix: title_suffix.to_string(),

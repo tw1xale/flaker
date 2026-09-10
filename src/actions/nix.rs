@@ -256,14 +256,153 @@ pub fn diff_closures(before: &Path, after: &Path) -> Result<Vec<ClosureDiffItem>
     Ok(parse_diff_closures_output(&stdout))
 }
 
-/// Computes closure diff against the active system (/run/current-system).
-pub fn get_system_closure_diff(new_closure: &Path) -> Result<Vec<ClosureDiffItem>> {
-    let current_system = Path::new("/run/current-system");
-    if current_system.exists() {
-        diff_closures(current_system, new_closure)
-    } else {
-        Ok(Vec::new())
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemClosureDiff {
+    pub items: Vec<ClosureDiffItem>,
+    pub is_identical_closure: bool,
+}
+
+fn format_size_delta(bytes_diff: i64) -> Option<String> {
+    if bytes_diff == 0 {
+        return None;
     }
+    let abs_d = bytes_diff.unsigned_abs();
+    let sign = if bytes_diff > 0 { '+' } else { '-' };
+    if abs_d < 1024 {
+        Some(format!("{sign}{abs_d} B"))
+    } else if abs_d < 1024 * 1024 {
+        Some(format!("{sign}{:.1} KiB", abs_d as f64 / 1024.0))
+    } else {
+        Some(format!("{sign}{:.1} MiB", abs_d as f64 / (1024.0 * 1024.0)))
+    }
+}
+
+pub fn parse_pkg_name_and_version(pkg_str: &str) -> (String, Option<String>) {
+    if let Some((name, ver)) = pkg_str.rsplit_once('-')
+        && ver.chars().next().is_some_and(|c| c.is_ascii_digit())
+    {
+        return (name.to_string(), Some(ver.to_string()));
+    }
+    (pkg_str.to_string(), None)
+}
+
+/// Discovers packages rebuilt in system-path (`sw/bin`, `sw/sbin`) that `nix store diff-closures`
+/// may have omitted because their version did not change and size delta was under 8 KiB.
+pub fn find_rebuilt_system_packages(
+    before: &Path,
+    after: &Path,
+    existing_items: &[ClosureDiffItem],
+) -> Vec<ClosureDiffItem> {
+    let mut rebuilts = Vec::new();
+    let mut seen_packages: std::collections::HashSet<String> = existing_items
+        .iter()
+        .map(|item| item.package.to_lowercase())
+        .collect();
+
+    for sub in &["bin", "sbin"] {
+        let dir_before = before.join("sw").join(sub);
+        let dir_after = after.join("sw").join(sub);
+
+        let Ok(entries) = fs::read_dir(&dir_after) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let path_after = entry.path();
+            let file_name = entry.file_name();
+            let path_before = dir_before.join(&file_name);
+
+            if !path_before.is_symlink() || !path_after.is_symlink() {
+                continue;
+            }
+
+            let Ok(target_before) = fs::read_link(&path_before) else {
+                continue;
+            };
+            let Ok(target_after) = fs::read_link(&path_after) else {
+                continue;
+            };
+
+            if target_before != target_after {
+                let canon_before = fs::canonicalize(&path_before).unwrap_or(target_before);
+                let canon_after = fs::canonicalize(&path_after).unwrap_or(target_after);
+
+                if canon_before == canon_after {
+                    continue;
+                }
+
+                let store_dir_after = canon_after.components().find_map(|c| {
+                    let s = c.as_os_str().to_string_lossy();
+                    if s.len() > 33 && s.chars().nth(32) == Some('-') {
+                        Some(s.to_string())
+                    } else {
+                        None
+                    }
+                });
+
+                let Some(store_dir) = store_dir_after else {
+                    continue;
+                };
+
+                let pkg_name_ver = &store_dir[33..];
+                let (pkg_name, version) = parse_pkg_name_and_version(pkg_name_ver);
+
+                if seen_packages.insert(pkg_name.to_lowercase()) {
+                    let size_delta = match (fs::metadata(&canon_before), fs::metadata(&canon_after))
+                    {
+                        (Ok(m1), Ok(m2)) => {
+                            let diff = (m2.len() as i64) - (m1.len() as i64);
+                            format_size_delta(diff)
+                        }
+                        _ => None,
+                    };
+
+                    let ver_str = version.as_deref().unwrap_or("rebuilt").to_string();
+                    rebuilts.push(ClosureDiffItem {
+                        package: pkg_name.clone(),
+                        before_version: version.clone(),
+                        after_version: version,
+                        size_delta,
+                        kind: DiffKind::Rebuilt,
+                        raw: format!("{pkg_name}: {ver_str}"),
+                    });
+                }
+            }
+        }
+    }
+
+    rebuilts
+}
+
+/// Computes closure diff against the active system (/run/current-system).
+pub fn get_system_closure_diff(new_closure: &Path) -> Result<SystemClosureDiff> {
+    let current_system = Path::new("/run/current-system");
+    if !current_system.exists() {
+        return Ok(SystemClosureDiff {
+            items: Vec::new(),
+            is_identical_closure: false,
+        });
+    }
+
+    let is_identical_closure = fs::canonicalize(current_system)
+        .and_then(|c| fs::canonicalize(new_closure).map(|n| c == n))
+        .unwrap_or(false);
+
+    if is_identical_closure {
+        return Ok(SystemClosureDiff {
+            items: Vec::new(),
+            is_identical_closure: true,
+        });
+    }
+
+    let mut items = diff_closures(current_system, new_closure).unwrap_or_default();
+    let rebuilts = find_rebuilt_system_packages(current_system, new_closure, &items);
+    items.extend(rebuilts);
+
+    Ok(SystemClosureDiff {
+        items,
+        is_identical_closure: false,
+    })
 }
 
 /// Runs a test build of the NixOS configuration (builds without activating).
@@ -748,6 +887,64 @@ warning: some warning
         );
         assert_eq!(strip_ansi("plain text"), "plain text");
         assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn test_parse_pkg_name_and_version() {
+        assert_eq!(
+            parse_pkg_name_and_version("flaker-0.2.0"),
+            ("flaker".to_string(), Some("0.2.0".to_string()))
+        );
+        assert_eq!(
+            parse_pkg_name_and_version("libunistring-1.4.2"),
+            ("libunistring".to_string(), Some("1.4.2".to_string()))
+        );
+        assert_eq!(
+            parse_pkg_name_and_version("system-path"),
+            ("system-path".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn test_format_size_delta() {
+        assert_eq!(format_size_delta(0), None);
+        assert_eq!(format_size_delta(200), Some("+200 B".to_string()));
+        assert_eq!(format_size_delta(-907), Some("-907 B".to_string()));
+        assert_eq!(format_size_delta(15360), Some("+15.0 KiB".to_string()));
+    }
+
+    #[test]
+    fn test_find_rebuilt_system_packages_mock() {
+        let base = std::env::temp_dir().join(format!("flaker_test_rebuilt_{}", std::process::id()));
+        let _ = fs::create_dir_all(&base);
+        let sys1 = base.join("sys1");
+        let sys2 = base.join("sys2");
+
+        let store_flaker1 =
+            base.join("store/11111111111111111111111111111111-flaker-0.2.0/bin/flaker");
+        let store_flaker2 =
+            base.join("store/22222222222222222222222222222222-flaker-0.2.0/bin/flaker");
+        let _ = fs::create_dir_all(store_flaker1.parent().unwrap());
+        let _ = fs::create_dir_all(store_flaker2.parent().unwrap());
+        fs::write(&store_flaker1, b"v1").unwrap();
+        fs::write(&store_flaker2, b"v2-longer").unwrap();
+
+        let sw1_bin = sys1.join("sw/bin");
+        let sw2_bin = sys2.join("sw/bin");
+        let _ = fs::create_dir_all(&sw1_bin);
+        let _ = fs::create_dir_all(&sw2_bin);
+
+        let _ = std::os::unix::fs::symlink(&store_flaker1, sw1_bin.join("flaker"));
+        let _ = std::os::unix::fs::symlink(&store_flaker2, sw2_bin.join("flaker"));
+
+        let rebuilts = find_rebuilt_system_packages(&sys1, &sys2, &[]);
+        let _ = fs::remove_dir_all(&base);
+
+        assert_eq!(rebuilts.len(), 1);
+        assert_eq!(rebuilts[0].package, "flaker");
+        assert_eq!(rebuilts[0].after_version, Some("0.2.0".to_string()));
+        assert_eq!(rebuilts[0].kind, DiffKind::Rebuilt);
+        assert_eq!(rebuilts[0].size_delta, Some("+7 B".to_string()));
     }
 
     #[test]

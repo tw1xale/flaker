@@ -156,8 +156,10 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         let msg = if state.items.is_empty() {
             if !std::path::Path::new("/run/current-system").exists() {
                 "No active system profile (/run/current-system) found to compare against."
+            } else if state.is_identical_closure {
+                "Active system and new build closures are completely identical (No changes)."
             } else {
-                "No package differences detected between active system and new build (Identical closure)."
+                "System configuration changed (rebuilt closure), but no package additions, removals, or version bumps detected."
             }
         } else {
             "No packages matched your search query."
@@ -243,10 +245,17 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
                         ));
                     }
                     DiffKind::Rebuilt => {
-                        spans.push(Span::styled(
-                            ": rebuilt",
-                            Style::default().fg(theme.faint_hint),
-                        ));
+                        if let Some(ref ver) = item.after_version {
+                            spans.push(Span::styled(
+                                format!(": {ver} (rebuilt)"),
+                                Style::default().fg(theme.faint_hint),
+                            ));
+                        } else {
+                            spans.push(Span::styled(
+                                ": rebuilt",
+                                Style::default().fg(theme.faint_hint),
+                            ));
+                        }
                     }
                 }
 
@@ -337,6 +346,7 @@ mod tests {
             filtered_indices: vec![0, 1],
             search_input: Input::default(),
             scroll_offset: 0,
+            is_identical_closure: false,
             on_confirm_task: None,
             return_screen: Box::new(crate::app::Screen::TopMenu),
             title_suffix: "Rebuild & Switch".to_string(),
@@ -361,6 +371,7 @@ mod tests {
                 filtered_indices: vec![],
                 search_input: Input::default(),
                 scroll_offset: 0,
+                is_identical_closure: false,
                 on_confirm_task: None,
                 return_screen: Box::new(crate::app::Screen::TopMenu),
                 title_suffix: "".to_string(),
