@@ -363,24 +363,26 @@ mod tests {
 
     #[test]
     fn test_render_closure_diff_small_term() {
-        let backend = TestBackend::new(20, 4);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let theme = Theme::default();
+        for (w, h) in [(20, 4), (1, 1), (0, 0)] {
+            let backend = TestBackend::new(w, h);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let theme = Theme::default();
 
-        let state = ClosureDiffState {
-            items: vec![],
-            filtered_indices: vec![],
-            search_input: Input::default(),
-            cursor: 0,
-            on_confirm_task: None,
-            return_screen: Box::new(crate::app::Screen::TopMenu),
-            title_suffix: "".to_string(),
-        };
+            let state = ClosureDiffState {
+                items: vec![],
+                filtered_indices: vec![],
+                search_input: Input::default(),
+                cursor: 0,
+                on_confirm_task: None,
+                return_screen: Box::new(crate::app::Screen::TopMenu),
+                title_suffix: "".to_string(),
+            };
 
-        terminal
-            .draw(|f| {
-                render_closure_diff(f, f.area(), &state, &theme);
-            })
-            .unwrap();
+            terminal
+                .draw(|f| {
+                    render_closure_diff(f, f.area(), &state, &theme);
+                })
+                .unwrap();
+        }
     }
 }

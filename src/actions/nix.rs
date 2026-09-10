@@ -75,6 +75,9 @@ fn strip_ansi(s: &str) -> String {
                     chars.next();
                     for c2 in chars.by_ref() {
                         if c2 == '\x07' || c2 == '\x1b' {
+                            if c2 == '\x1b' && chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
                             break;
                         }
                     }
@@ -131,20 +134,20 @@ pub fn parse_diff_closures_output(output: &str) -> Vec<ClosureDiffItem> {
                 (right, None)
             };
 
-            let kind = if left == "∅" {
+            let kind = if left == "∅" || left.is_empty() {
                 DiffKind::Added
-            } else if new_ver == "∅" {
+            } else if new_ver == "∅" || new_ver.is_empty() {
                 DiffKind::Removed
             } else {
                 DiffKind::Updated
             };
 
-            let before_version = if left == "∅" {
+            let before_version = if left == "∅" || left.is_empty() {
                 None
             } else {
                 Some(left.to_string())
             };
-            let after_version = if new_ver == "∅" {
+            let after_version = if new_ver == "∅" || new_ver.is_empty() {
                 None
             } else {
                 Some(new_ver.to_string())
@@ -714,12 +717,27 @@ warning: some warning
         assert_eq!(items[0].after_version.as_deref(), Some("5.2p32"));
         assert_eq!(items[0].size_delta.as_deref(), Some("+4.2 KiB"));
         assert_eq!(items[0].kind, DiffKind::Updated);
+
+        let sample_added = "zsh: -> 5.9, +1.2 MiB\n";
+        let items_added = parse_diff_closures_output(sample_added);
+        assert_eq!(items_added.len(), 1);
+        assert_eq!(items_added[0].package, "zsh");
+        assert_eq!(items_added[0].kind, DiffKind::Added);
+        assert_eq!(items_added[0].before_version, None);
+        assert_eq!(items_added[0].after_version.as_deref(), Some("5.9"));
     }
 
     #[test]
     fn test_strip_ansi_comprehensive() {
         assert_eq!(strip_ansi("\x1b[32mhello\x1b[0m world"), "hello world");
-        assert_eq!(strip_ansi("\x1b]0;ignored title\x07actual text"), "actual text");
+        assert_eq!(
+            strip_ansi("\x1b]0;ignored title\x07actual text"),
+            "actual text"
+        );
+        assert_eq!(
+            strip_ansi("\x1b]0;ignored title\x1b\\actual text"),
+            "actual text"
+        );
         assert_eq!(strip_ansi("plain text"), "plain text");
         assert_eq!(strip_ansi(""), "");
     }
