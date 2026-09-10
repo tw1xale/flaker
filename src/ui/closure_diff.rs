@@ -5,7 +5,7 @@ use crate::ui::header::centered_rect;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
@@ -114,6 +114,17 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     let filter_count = state.filtered_indices.len();
     let total_count = state.items.len();
 
+    let count_detail = if filter_count > chunks[3].height as usize && chunks[3].height > 0 {
+        let max_visible = chunks[3].height as usize;
+        let max_scroll = filter_count.saturating_sub(max_visible);
+        let actual_scroll = state.scroll_offset.min(max_scroll);
+        let first = actual_scroll + 1;
+        let last = (actual_scroll + max_visible).min(filter_count);
+        format!("  ({filter_count} / {total_count} shown  •  {first}–{last} of {filter_count})")
+    } else {
+        format!("  ({filter_count} / {total_count} shown)")
+    };
+
     let search_line = Line::from(vec![
         Span::styled(
             " 🔍 Filter: ",
@@ -135,10 +146,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
                     .add_modifier(Modifier::UNDERLINED)
             },
         ),
-        Span::styled(
-            format!("  ({filter_count} / {total_count} shown)"),
-            Style::default().fg(theme.faint_hint),
-        ),
+        Span::styled(count_detail, Style::default().fg(theme.faint_hint)),
     ]);
     let search_p = Paragraph::new(search_line);
     frame.render_widget(search_p, chunks[2]);
@@ -163,30 +171,16 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         frame.render_widget(empty_p, chunks[3]);
     } else {
         let max_visible = chunks[3].height as usize;
-        let scroll_offset = if max_visible > 0 && state.cursor >= max_visible {
-            state.cursor.saturating_sub(max_visible).saturating_add(1)
-        } else {
-            0
-        };
+        let max_scroll = state.filtered_indices.len().saturating_sub(max_visible);
+        let scroll_offset = state.scroll_offset.min(max_scroll);
 
         let list_items: Vec<ListItem> = state
             .filtered_indices
             .iter()
-            .enumerate()
             .skip(scroll_offset)
             .take(max_visible)
-            .filter_map(|(pos, &item_idx)| {
+            .filter_map(|&item_idx| {
                 let item = state.items.get(item_idx)?;
-                let is_selected = pos == state.cursor;
-
-                let pointer = if is_selected { "> " } else { "  " };
-                let pointer_style = if is_selected {
-                    Style::default()
-                        .fg(theme.selected)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Reset)
-                };
 
                 let (badge, badge_style) = match item.kind {
                     DiffKind::Added => (
@@ -210,16 +204,10 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
                     DiffKind::Rebuilt => ("[•] ", Style::default().fg(theme.faint_hint)),
                 };
 
-                let pkg_style = if is_selected {
-                    Style::default()
-                        .fg(theme.selected)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text)
-                };
+                let pkg_style = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
 
                 let mut spans = vec![
-                    Span::styled(pointer, pointer_style),
+                    Span::raw("  "),
                     Span::styled(badge, badge_style),
                     Span::styled(&item.package, pkg_style),
                 ];
@@ -304,7 +292,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         ),
         Span::styled("Cancel / Abort  •  ", Style::default().fg(theme.faint_hint)),
         Span::styled("Type to Filter  •  ", Style::default().fg(theme.faint_hint)),
-        Span::styled("↑/↓ Navigate", Style::default().fg(theme.faint_hint)),
+        Span::styled("↑/↓ Scroll", Style::default().fg(theme.faint_hint)),
     ]);
     let hint_line = Line::from(hint_spans);
     let hint_p = Paragraph::new(hint_line)
@@ -348,7 +336,7 @@ mod tests {
             ],
             filtered_indices: vec![0, 1],
             search_input: Input::default(),
-            cursor: 0,
+            scroll_offset: 0,
             on_confirm_task: None,
             return_screen: Box::new(crate::app::Screen::TopMenu),
             title_suffix: "Rebuild & Switch".to_string(),
@@ -372,7 +360,7 @@ mod tests {
                 items: vec![],
                 filtered_indices: vec![],
                 search_input: Input::default(),
-                cursor: 0,
+                scroll_offset: 0,
                 on_confirm_task: None,
                 return_screen: Box::new(crate::app::Screen::TopMenu),
                 title_suffix: "".to_string(),
