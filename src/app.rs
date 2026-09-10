@@ -2221,6 +2221,11 @@ mod tests {
 
     #[test]
     fn test_file_filter_head_rollback() {
+        let repo_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        if !crate::actions::is_git_repo(repo_dir) || !git::has_parent_commit(repo_dir, "HEAD") {
+            return;
+        }
+
         let mut app = App::new();
         app.screen = Screen::FileFilter(FileFilterState {
             commit_hash: "HEAD".to_string(),
