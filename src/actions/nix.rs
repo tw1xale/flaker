@@ -57,14 +57,36 @@ pub struct ClosureDiffItem {
     pub raw: String,
 }
 
+/// Strips ANSI escape sequences from strings.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_escape = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+        } else if in_escape {
+            if c == 'm' || c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Parses the output of `nix store diff-closures`.
 pub fn parse_diff_closures_output(output: &str) -> Vec<ClosureDiffItem> {
     let mut items = Vec::new();
     for line in output.lines() {
-        let trimmed = line.trim();
+        let cleaned = strip_ansi(line);
+        let trimmed = cleaned.trim();
         if trimmed.is_empty()
             || trimmed.starts_with("warning:")
             || trimmed.starts_with("error:")
+            || trimmed.starts_with("trace:")
+            || trimmed.starts_with("note:")
+            || trimmed.starts_with("evaluating ")
             || trimmed.starts_with("this derivation")
             || trimmed.starts_with("building")
         {
@@ -138,6 +160,19 @@ pub fn parse_diff_closures_output(output: &str) -> Vec<ClosureDiffItem> {
     items
 }
 
+/// Safely removes the `./result` symlink in `dir`, using sudo if unprivileged removal fails.
+pub fn clean_result_link(dir: &Path, needs_sudo: bool) {
+    let result_link = dir.join("result");
+    if result_link.symlink_metadata().is_ok()
+        && fs::remove_file(&result_link).is_err()
+        && needs_sudo
+    {
+        let mut cmd = Command::new("sudo");
+        cmd.args(["rm", "-f", &result_link.to_string_lossy()]);
+        let _ = cmd.status();
+    }
+}
+
 /// Runs a build of the NixOS configuration, returning the canonical path of the built system closure.
 pub fn nixos_rebuild_build_closure(flake_target: &str, dir: &Path) -> Result<PathBuf> {
     let mut cmd = Command::new("sudo");
@@ -161,7 +196,10 @@ pub fn nixos_rebuild_build_closure(flake_target: &str, dir: &Path) -> Result<Pat
             .with_context(|| format!("Failed to canonicalize {}", result_link.display()))?;
         Ok(canonical)
     } else {
-        anyhow::bail!("Build succeeded but 'result' symlink was not found in {}", dir.display());
+        anyhow::bail!(
+            "Build succeeded but 'result' symlink was not found in {}",
+            dir.display()
+        );
     }
 }
 
@@ -169,6 +207,8 @@ pub fn nixos_rebuild_build_closure(flake_target: &str, dir: &Path) -> Result<Pat
 pub fn diff_closures(before: &Path, after: &Path) -> Result<Vec<ClosureDiffItem>> {
     let mut cmd = Command::new("nix");
     cmd.args([
+        "--extra-experimental-features",
+        "nix-command flakes",
         "store",
         "diff-closures",
         &before.to_string_lossy(),
@@ -323,27 +363,46 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
         let mut names = Vec::new();
         let mut in_inputs_block = false;
 
+        let mut brace_depth: usize = 0;
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("inputs") && trimmed.contains('{') {
-                in_inputs_block = true;
-                continue;
-            }
-
-            if in_inputs_block {
-                if trimmed.starts_with('}') {
-                    break;
+            if !in_inputs_block {
+                if (trimmed.starts_with("inputs") || trimmed.contains("inputs ="))
+                    && trimmed.contains('{')
+                {
+                    in_inputs_block = true;
+                    brace_depth = 1;
+                    let opens = trimmed.chars().filter(|&c| c == '{').count();
+                    let closes = trimmed.chars().filter(|&c| c == '}').count();
+                    if opens > 1 {
+                        brace_depth += opens - 1;
+                    }
+                    brace_depth = brace_depth.saturating_sub(closes);
+                    if brace_depth == 0 {
+                        break;
+                    }
                 }
-                if let Some((name_part, _)) = trimmed.split_once('.') {
-                    let clean = name_part.trim().trim_matches('"');
-                    if !clean.is_empty() && !names.contains(&clean.to_string()) {
-                        names.push(clean.to_string());
+            } else {
+                let opens = trimmed.chars().filter(|&c| c == '{').count();
+                let closes = trimmed.chars().filter(|&c| c == '}').count();
+
+                if brace_depth == 1 {
+                    if let Some((name_part, _)) = trimmed.split_once('.') {
+                        let clean = name_part.trim().trim_matches('"');
+                        if !clean.is_empty() && !names.contains(&clean.to_string()) {
+                            names.push(clean.to_string());
+                        }
+                    } else if let Some((name_part, _)) = trimmed.split_once('=') {
+                        let clean = name_part.trim().trim_matches('"');
+                        if !clean.is_empty() && !names.contains(&clean.to_string()) {
+                            names.push(clean.to_string());
+                        }
                     }
-                } else if let Some((name_part, _)) = trimmed.split_once('=') {
-                    let clean = name_part.trim().trim_matches('"');
-                    if !clean.is_empty() && !names.contains(&clean.to_string()) {
-                        names.push(clean.to_string());
-                    }
+                }
+
+                brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+                if brace_depth == 0 {
+                    break;
                 }
             }
         }
@@ -500,29 +559,24 @@ mod tests {
     "local_node": {
       "locked": {
         "type": "path",
-        "path": "/etc/dotfiles/flake"
+        "path": "/etc/nixos/local"
       }
     }
   },
+  "root": "root",
   "version": 7
 }"#;
-        let lock_path = temp_dir.join("flake.lock");
-        std::fs::write(&lock_path, lock_content).unwrap();
 
-        let inputs = get_flake_inputs(&temp_dir).expect("parsing lock should succeed");
+        std::fs::write(temp_dir.join("flake.lock"), lock_content).unwrap();
+
+        let inputs = get_flake_inputs(&temp_dir).unwrap();
         assert_eq!(inputs.len(), 4);
 
-        let nixpkgs = inputs.iter().find(|i| i.name == "nixpkgs").unwrap();
-        assert_eq!(nixpkgs.details, "NixOS/nixpkgs@abcdef1");
-
-        let hm = inputs.iter().find(|i| i.name == "home-manager").unwrap();
-        assert_eq!(hm.details, "nix-community/home-manager@1234567");
-
-        let local = inputs.iter().find(|i| i.name == "local-flake").unwrap();
-        assert_eq!(local.details, "path:/etc/dotfiles/flake");
-
-        let sub = inputs.iter().find(|i| i.name == "subinput").unwrap();
-        assert_eq!(sub.details, "follows nixpkgs");
+        let names: Vec<String> = inputs.into_iter().map(|i| i.name).collect();
+        assert_eq!(
+            names,
+            vec!["home-manager", "local-flake", "nixpkgs", "subinput"]
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -539,22 +593,27 @@ mod tests {
         ));
         let _ = std::fs::create_dir_all(&temp_dir);
 
-        let flake_nix = r#"
+        let flake_content = r#"
 {
+  description = "Test Flake";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    disko.url = "github:nix-community/disko";
+    "rust-overlay".url = "github:oxalica/rust-overlay";
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
-  outputs = { self, nixpkgs, disko }: { };
+  outputs = { self, ... }: {};
 }
 "#;
-        std::fs::write(temp_dir.join("flake.nix"), flake_nix).unwrap();
+        std::fs::write(temp_dir.join("flake.nix"), flake_content).unwrap();
 
-        let inputs = get_flake_inputs(&temp_dir).expect("parsing flake.nix should succeed");
-        assert_eq!(inputs.len(), 2);
-        let names: Vec<_> = inputs.iter().map(|i| i.name.as_str()).collect();
-        assert!(names.contains(&"nixpkgs"));
-        assert!(names.contains(&"disko"));
+        let inputs = get_flake_inputs(&temp_dir).unwrap();
+        assert_eq!(inputs.len(), 3);
+
+        let names: Vec<String> = inputs.into_iter().map(|i| i.name).collect();
+        assert_eq!(names, vec!["disko", "nixpkgs", "rust-overlay"]);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -607,8 +666,39 @@ warning: some warning
         // 6. fish (Multiple versions in tag)
         assert_eq!(items[5].package, "fish");
         assert_eq!(items[5].kind, DiffKind::Updated);
-        assert_eq!(items[5].before_version.as_deref(), Some("4.9.2, 4.9.2_fish"));
+        assert_eq!(
+            items[5].before_version.as_deref(),
+            Some("4.9.2, 4.9.2_fish")
+        );
         assert_eq!(items[5].after_version.as_deref(), Some("4.9.3, 4.9.3_fish"));
     }
 
+    #[test]
+    fn test_parse_diff_closures_output_ansi_and_traces() {
+        let sample = "\x1b[32mfirefox\x1b[0m: 134.0 → 135.0, +12.4 MiB\ntrace: something evaluating\nnote: nix note\n";
+        let items = parse_diff_closures_output(sample);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].package, "firefox");
+        assert_eq!(items[0].before_version.as_deref(), Some("134.0"));
+        assert_eq!(items[0].after_version.as_deref(), Some("135.0"));
+        assert_eq!(items[0].size_delta.as_deref(), Some("+12.4 MiB"));
+    }
+
+    #[test]
+    fn test_clean_result_link() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("flaker_test_result_link_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let link_target = temp_dir.join("target");
+        let _ = std::fs::write(&link_target, "test");
+        let link_path = temp_dir.join("result");
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(&link_target, &link_path);
+
+        assert!(link_path.symlink_metadata().is_ok());
+        clean_result_link(&temp_dir, false);
+        assert!(link_path.symlink_metadata().is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

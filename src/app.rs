@@ -958,6 +958,21 @@ impl App {
             return;
         };
 
+        if self.config.keybindings.is_clear_input(&key)
+            || (key.modifiers.contains(KeyModifiers::CONTROL)
+                && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('u')))
+        {
+            if !state.search_input.value().is_empty() {
+                state.search_input = Input::default();
+                state.filtered_indices = (0..state.items.len()).collect();
+                state.cursor = 0;
+            } else {
+                crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
+                self.screen = *state.return_screen.clone();
+            }
+            return;
+        }
+
         if key.code == KeyCode::Esc {
             if !state.search_input.value().is_empty() {
                 state.search_input = Input::default();
@@ -965,13 +980,13 @@ impl App {
                 state.cursor = 0;
                 return;
             }
-            let _ = std::fs::remove_file(self.flake_dir.join("result"));
+            crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
             self.screen = *state.return_screen.clone();
             return;
         }
 
-        if self.config.keybindings.is_select(&key) || key.code == KeyCode::Enter {
-            let _ = std::fs::remove_file(self.flake_dir.join("result"));
+        if key.code == KeyCode::Enter {
+            crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
             if let Some(task) = state.on_confirm_task.take() {
                 self.pending_external_task = *task;
             } else {
@@ -980,7 +995,9 @@ impl App {
             return;
         }
 
-        if self.config.keybindings.is_up(&key) {
+        let is_up = key.code == KeyCode::Up
+            || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p'));
+        if is_up {
             if state.cursor > 0 {
                 state.cursor -= 1;
             } else if !state.filtered_indices.is_empty() {
@@ -989,7 +1006,9 @@ impl App {
             return;
         }
 
-        if self.config.keybindings.is_down(&key) {
+        let is_down = key.code == KeyCode::Down
+            || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('n'));
+        if is_down {
             if state.cursor + 1 < state.filtered_indices.len() {
                 state.cursor += 1;
             } else {
@@ -1005,7 +1024,8 @@ impl App {
 
         if key.code == KeyCode::PageDown {
             if !state.filtered_indices.is_empty() {
-                state.cursor = (state.cursor + 10).min(state.filtered_indices.len().saturating_sub(1));
+                state.cursor =
+                    (state.cursor + 10).min(state.filtered_indices.len().saturating_sub(1));
             }
             return;
         }
@@ -1022,22 +1042,25 @@ impl App {
             return;
         }
 
-        let req = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key));
+        let prev_val = state.search_input.value().to_string();
+        let req =
+            tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key));
         if let Some(req) = req
             && state.search_input.handle(req).is_some()
+            && state.search_input.value() != prev_val
         {
             let query = state.search_input.value().to_lowercase();
-                state.filtered_indices = state
-                    .items
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, item)| {
-                        item.package.to_lowercase().contains(&query)
-                            || item.raw.to_lowercase().contains(&query)
-                    })
-                    .map(|(idx, _)| idx)
-                    .collect();
-                state.cursor = 0;
+            state.filtered_indices = state
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| {
+                    item.package.to_lowercase().contains(&query)
+                        || item.raw.to_lowercase().contains(&query)
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+            state.cursor = 0;
         }
     }
 
@@ -2805,4 +2828,59 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_closure_diff_search_with_j_and_k() {
+        let mut app = App::new();
+        let items = vec![
+            crate::actions::nix::ClosureDiffItem {
+                package: "jq".to_string(),
+                before_version: None,
+                after_version: Some("1.7".to_string()),
+                size_delta: None,
+                kind: crate::actions::nix::DiffKind::Added,
+                raw: "jq: ∅ → 1.7".to_string(),
+            },
+            crate::actions::nix::ClosureDiffItem {
+                package: "kakoune".to_string(),
+                before_version: None,
+                after_version: Some("2024.05.18".to_string()),
+                size_delta: None,
+                kind: crate::actions::nix::DiffKind::Added,
+                raw: "kakoune: ∅ → 2024.05.18".to_string(),
+            },
+        ];
+
+        app.screen = Screen::ClosureDiff(ClosureDiffState {
+            items,
+            filtered_indices: vec![0, 1],
+            search_input: Input::default(),
+            cursor: 0,
+            on_confirm_task: None,
+            return_screen: Box::new(Screen::TopMenu),
+            title_suffix: "Test".to_string(),
+        });
+
+        // Typing 'k' should filter to "kakoune", NOT jump cursor up!
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.search_input.value(), "k");
+            assert_eq!(state.filtered_indices.len(), 1);
+            assert_eq!(state.filtered_indices[0], 1); // kakoune
+        }
+
+        // Ctrl+U clears search input
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.search_input.value(), "");
+            assert_eq!(state.filtered_indices.len(), 2);
+        }
+
+        // Typing 'j' should filter to "jq", NOT jump cursor down!
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        if let Screen::ClosureDiff(ref state) = app.screen {
+            assert_eq!(state.search_input.value(), "j");
+            assert_eq!(state.filtered_indices.len(), 1);
+            assert_eq!(state.filtered_indices[0], 0); // jq
+        }
+    }
 }
