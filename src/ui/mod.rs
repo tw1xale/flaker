@@ -1,3 +1,4 @@
+pub mod closure_diff;
 pub mod confirm;
 pub mod diff;
 pub mod filter;
