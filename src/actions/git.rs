@@ -64,6 +64,18 @@ pub fn git_commit(dir: &Path, needs_sudo: bool, message: &str) -> Result<()> {
     }
 }
 
+/// Checks if the repository has any configured remote repositories (read-only, no sudo).
+pub fn has_remote(dir: &Path) -> bool {
+    let mut cmd = Command::new("git");
+    cmd.args(["remote"]).current_dir(dir);
+    if let Ok(out) = run_silent(&mut cmd) {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        out.status.success() && !stdout.trim().is_empty()
+    } else {
+        false
+    }
+}
+
 /// Retrieves the current git branch name, falling back to "master" (read-only, no sudo).
 pub fn get_current_branch(dir: &Path) -> String {
     let mut cmd = Command::new("git");
@@ -81,11 +93,16 @@ pub fn get_current_branch(dir: &Path) -> String {
 
 /// Pushes commits to the remote repository.
 pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
+    if !has_remote(dir) {
+        return Ok(());
+    }
+
     let branch = get_current_branch(dir);
+    let force_flag = "--force-with-lease";
 
     let mut args = vec!["push"];
     if force {
-        args.push("--force");
+        args.push(force_flag);
     }
     args.extend(["origin", &branch]);
 
@@ -100,7 +117,7 @@ pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
     };
     let desc = format!(
         "{prefix}git push {} origin {branch}",
-        if force { "--force" } else { "" }
+        if force { force_flag } else { "" }
     );
 
     let status = run_visible(title, desc.trim(), &mut cmd);
@@ -112,13 +129,13 @@ pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
     // Fallback without explicit remote/branch
     let mut fallback_args = vec!["push"];
     if force {
-        fallback_args.push("--force");
+        fallback_args.push(force_flag);
     }
 
     let mut fallback_cmd = make_cmd("git", dir, needs_sudo);
     fallback_cmd.args(&fallback_args);
 
-    let fallback_desc = format!("{prefix}git push {}", if force { "--force" } else { "" });
+    let fallback_desc = format!("{prefix}git push {}", if force { force_flag } else { "" });
 
     let fallback_status = run_visible(title, fallback_desc.trim(), &mut fallback_cmd)
         .context("Failed to execute git push fallback")?;
@@ -350,7 +367,6 @@ pub fn is_head_commit(dir: &Path, hash: &str) -> bool {
 }
 
 /// Checks if the given commit reference has a parent commit (i.e. not an initial/root commit).
-#[cfg(test)]
 pub fn has_parent_commit(dir: &Path, hash: &str) -> bool {
     let parent_ref = format!("{hash}~1");
     let mut cmd = Command::new("git");
@@ -420,7 +436,8 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
     }
 
     let is_identical = is_file_identical_to_head(dir, hash, file);
-    let target_ref = if is_identical {
+    let has_parent = has_parent_commit(dir, hash);
+    let target_ref = if is_identical && has_parent {
         format!("{hash}~1")
     } else {
         hash.to_string()
@@ -438,15 +455,21 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if stdout.trim().is_empty() {
         if is_identical {
-            Ok(format!(
-                "File '{file}' in commit {hash} has no differences compared to parent commit {target_ref}."
-            ))
+            if has_parent {
+                Ok(format!(
+                    "File '{file}' in commit {hash} has no differences compared to parent commit {target_ref}."
+                ))
+            } else {
+                Ok(format!(
+                    "File '{file}' is at the root commit (no parent commit exists for rollback)."
+                ))
+            }
         } else {
             Ok(format!(
                 "File '{file}' is identical between HEAD and commit {hash}."
             ))
         }
-    } else if is_identical {
+    } else if is_identical && has_parent {
         Ok(format!(
             "§§hint:Rollback preview (reverting changes from {hash} to {target_ref}):\n{stdout}"
         ))

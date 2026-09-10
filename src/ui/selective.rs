@@ -17,8 +17,11 @@ pub fn render_selective(
     theme: &Theme,
 ) {
     let popup_width = 78.min(area.width.saturating_sub(4));
-    let item_count = state.inputs.len() as u16;
-    let popup_height = (item_count + 8).min(area.height.saturating_sub(2)).max(10);
+    let item_count = u16::try_from(state.inputs.len()).unwrap_or(u16::MAX);
+    let popup_height = item_count
+        .saturating_add(8)
+        .max(10)
+        .min(area.height.saturating_sub(2));
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
@@ -245,6 +248,30 @@ mod tests {
                 details: "".to_string(),
             }],
             selected: vec![false],
+            cursor: 0,
+            return_screen: Box::new(crate::app::Screen::TopMenu),
+        };
+
+        terminal
+            .draw(|frame| {
+                render_selective(frame, frame.area(), &state, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_render_selective_very_small_terminal() {
+        let backend = TestBackend::new(30, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::default();
+
+        let state = SelectiveUpdateState {
+            mode: SelectiveMode::Include,
+            inputs: vec![FlakeInput {
+                name: "nixpkgs".to_string(),
+                details: "".to_string(),
+            }],
+            selected: vec![true],
             cursor: 0,
             return_screen: Box::new(crate::app::Screen::TopMenu),
         };

@@ -27,8 +27,10 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     };
 
     let popup_width = 68.min(area.width.saturating_sub(4));
-    let content_lines = params.lines.len() as u16;
-    let popup_height = (content_lines + 8).min(area.height.saturating_sub(2));
+    let content_lines = u16::try_from(params.lines.len()).unwrap_or(u16::MAX);
+    let popup_height = content_lines
+        .saturating_add(8)
+        .min(area.height.saturating_sub(2));
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
@@ -116,4 +118,55 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
     frame.render_widget(hint_p, chunks[4]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn test_render_confirm_no_panic() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::default();
+
+        let params = ConfirmParams {
+            title: "CONFIRM TEST",
+            lines: &["Line 1", "Line 2"],
+            affirmative_label: "Yes",
+            negative_label: "No",
+            selected_button: 0,
+            is_danger: true,
+            hint: "Esc to cancel",
+        };
+
+        let res = terminal.draw(|f| {
+            render_confirm(f, f.area(), &params, &theme);
+        });
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_render_confirm_small_area() {
+        let backend = TestBackend::new(10, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::default();
+
+        let params = ConfirmParams {
+            title: "T",
+            lines: &["L1"],
+            affirmative_label: "Y",
+            negative_label: "N",
+            selected_button: 1,
+            is_danger: false,
+            hint: "H",
+        };
+
+        let res = terminal.draw(|f| {
+            render_confirm(f, f.area(), &params, &theme);
+        });
+        assert!(res.is_ok());
+    }
 }
