@@ -29,12 +29,18 @@ pub fn parse_flake_configs(content: &str) -> Vec<String> {
     let mut configs = Vec::new();
     for line in content.lines() {
         let trimmed = line.trim();
+        if trimmed.starts_with('#') || trimmed.starts_with("//") || trimmed.starts_with("/*") {
+            continue;
+        }
         if let Some(pos) = trimmed.find("nixosConfigurations.") {
             let rest = &trimmed[pos + "nixosConfigurations.".len()..];
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
+            let name: String = if let Some(unquoted) = rest.strip_prefix('"') {
+                unquoted.chars().take_while(|c| *c != '"').collect()
+            } else {
+                rest.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect()
+            };
             if !name.is_empty() && !configs.contains(&name) {
                 configs.push(name);
             }
@@ -401,6 +407,20 @@ mod tests {
         "#;
         let configs = parse_flake_configs(flake);
         assert_eq!(configs, vec!["laptop", "server", "home"]);
+    }
+
+    #[test]
+    fn test_parse_flake_configs_comments_and_quotes() {
+        let flake = r#"
+            outputs = { self, nixpkgs, ... }: {
+                # nixosConfigurations.commented-out = nixpkgs.lib.nixosSystem { ... };
+                // nixosConfigurations.also-commented = nixpkgs.lib.nixosSystem { ... };
+                nixosConfigurations."quoted-host" = nixpkgs.lib.nixosSystem { ... };
+                nixosConfigurations.normal-host = nixpkgs.lib.nixosSystem { ... };
+            };
+        "#;
+        let configs = parse_flake_configs(flake);
+        assert_eq!(configs, vec!["quoted-host", "normal-host"]);
     }
 
     #[test]

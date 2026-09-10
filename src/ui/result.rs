@@ -26,8 +26,13 @@ pub fn render_result(
 
     let popup_width = 68.min(area.width.saturating_sub(4));
     let wrap_width = (popup_width as usize).saturating_sub(4).max(1);
-    let msg_lines = (message.len() / wrap_width).max(1) as u16 + message.lines().count() as u16;
-    let popup_height = (msg_lines + 6).min(area.height.saturating_sub(2)).max(1);
+    let count_wrap = u16::try_from(message.len() / wrap_width).unwrap_or(u16::MAX);
+    let count_lines = u16::try_from(message.lines().count()).unwrap_or(u16::MAX);
+    let msg_lines = count_wrap.max(1).saturating_add(count_lines);
+    let popup_height = msg_lines
+        .saturating_add(6)
+        .min(area.height.saturating_sub(2))
+        .max(1);
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);

@@ -102,24 +102,40 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
                 let mut details = String::new();
                 if let Some(target_key) = node_target.as_str()
                     && let Some(node) = v.get("nodes").and_then(|n| n.get(target_key))
-                    && let Some(locked) = node.get("locked")
                 {
-                    let typ = locked.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    let owner = locked.get("owner").and_then(|o| o.as_str());
-                    let repo = locked.get("repo").and_then(|r| r.as_str());
-                    let rev = locked.get("rev").and_then(|r| r.as_str());
+                    if let Some(locked) = node.get("locked") {
+                        let typ = locked.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        let owner = locked.get("owner").and_then(|o| o.as_str());
+                        let repo = locked.get("repo").and_then(|r| r.as_str());
+                        let rev = locked.get("rev").and_then(|r| r.as_str());
 
-                    if let (Some(o), Some(r)) = (owner, repo) {
-                        if let Some(rev) = rev {
-                            let short_rev: String = rev.chars().take(7).collect();
-                            details = format!("{o}/{r}@{short_rev}");
-                        } else {
-                            details = format!("{o}/{r}");
+                        if let (Some(o), Some(r)) = (owner, repo) {
+                            if let Some(rev) = rev {
+                                let short_rev: String = rev.chars().take(7).collect();
+                                details = format!("{o}/{r}@{short_rev}");
+                            } else {
+                                details = format!("{o}/{r}");
+                            }
+                        } else if let Some(url) = locked.get("url").and_then(|u| u.as_str()) {
+                            details = url.to_string();
+                        } else if let Some(path) = locked.get("path").and_then(|p| p.as_str()) {
+                            details = format!("path:{path}");
+                        } else if !typ.is_empty() {
+                            details = typ.to_string();
                         }
-                    } else if let Some(url) = locked.get("url").and_then(|u| u.as_str()) {
-                        details = url.to_string();
-                    } else if !typ.is_empty() {
-                        details = typ.to_string();
+                    } else if let Some(original) = node.get("original") {
+                        if let (Some(o), Some(r)) = (
+                            original.get("owner").and_then(|o| o.as_str()),
+                            original.get("repo").and_then(|r| r.as_str()),
+                        ) {
+                            details = format!("{o}/{r}");
+                        } else if let Some(url) = original.get("url").and_then(|u| u.as_str()) {
+                            details = url.to_string();
+                        } else if let Some(id) = original.get("id").and_then(|i| i.as_str()) {
+                            details = id.to_string();
+                        } else if let Some(path) = original.get("path").and_then(|p| p.as_str()) {
+                            details = format!("path:{path}");
+                        }
                     }
                 } else if let Some(arr) = node_target.as_array() {
                     let path = arr
@@ -148,34 +164,32 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
         let content = fs::read_to_string(&flake_nix_path).unwrap_or_default();
         let mut names = Vec::new();
         let mut in_inputs_block = false;
+
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("inputs = {") || trimmed.starts_with("inputs={") {
+            if trimmed.starts_with("inputs") && trimmed.contains('{') {
                 in_inputs_block = true;
                 continue;
             }
-            if in_inputs_block && (trimmed.starts_with("};") || trimmed.starts_with('}')) {
-                in_inputs_block = false;
-            }
+
             if in_inputs_block {
-                if let Some(name) = trimmed.split(['.', '=']).next() {
-                    let name = name.trim();
-                    if !name.is_empty()
-                        && !name.starts_with('#')
-                        && !names.contains(&name.to_string())
-                    {
-                        names.push(name.to_string());
-                    }
+                if trimmed.starts_with('}') {
+                    break;
                 }
-            } else if let Some(rest) = trimmed.strip_prefix("inputs.")
-                && let Some(name) = rest.split(['.', '=']).next()
-            {
-                let name = name.trim();
-                if !name.is_empty() && !names.contains(&name.to_string()) {
-                    names.push(name.to_string());
+                if let Some((name_part, _)) = trimmed.split_once('.') {
+                    let clean = name_part.trim().trim_matches('"');
+                    if !clean.is_empty() && !names.contains(&clean.to_string()) {
+                        names.push(clean.to_string());
+                    }
+                } else if let Some((name_part, _)) = trimmed.split_once('=') {
+                    let clean = name_part.trim().trim_matches('"');
+                    if !clean.is_empty() && !names.contains(&clean.to_string()) {
+                        names.push(clean.to_string());
+                    }
                 }
             }
         }
+
         if !names.is_empty() {
             names.sort();
             return Ok(names
@@ -305,6 +319,7 @@ mod tests {
       "inputs": {
         "nixpkgs": "nixpkgs_node",
         "home-manager": "hm_node",
+        "local-flake": "local_node",
         "subinput": ["nixpkgs"]
       }
     },
@@ -323,6 +338,12 @@ mod tests {
         "repo": "home-manager",
         "rev": "1234567abcdef"
       }
+    },
+    "local_node": {
+      "locked": {
+        "type": "path",
+        "path": "/etc/dotfiles/flake"
+      }
     }
   },
   "version": 7
@@ -331,13 +352,16 @@ mod tests {
         std::fs::write(&lock_path, lock_content).unwrap();
 
         let inputs = get_flake_inputs(&temp_dir).expect("parsing lock should succeed");
-        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs.len(), 4);
 
         let nixpkgs = inputs.iter().find(|i| i.name == "nixpkgs").unwrap();
         assert_eq!(nixpkgs.details, "NixOS/nixpkgs@abcdef1");
 
         let hm = inputs.iter().find(|i| i.name == "home-manager").unwrap();
         assert_eq!(hm.details, "nix-community/home-manager@1234567");
+
+        let local = inputs.iter().find(|i| i.name == "local-flake").unwrap();
+        assert_eq!(local.details, "path:/etc/dotfiles/flake");
 
         let sub = inputs.iter().find(|i| i.name == "subinput").unwrap();
         assert_eq!(sub.details, "follows nixpkgs");

@@ -648,6 +648,17 @@ fn execute_external_task(
             } else {
                 r1
             };
+            if r2.is_ok() && !git::has_staged_changes(&flake_dir).unwrap_or(false) {
+                app.screen = Screen::Result(ResultState {
+                    is_success: true,
+                    title: "NO CHANGES TO REVERT".to_string(),
+                    message: format!(
+                        "Working tree files are already identical to commit {hash}. No revert commit needed."
+                    ),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+                return Ok(());
+            }
             let r3 = if r2.is_ok() {
                 git::git_commit(&flake_dir, needs_sudo, &msg)
             } else {
@@ -706,8 +717,31 @@ fn execute_external_task(
         }
 
         ExternalTask::TrimHistoryCommitAndPush(hash, msg) => {
+            if git::is_head_commit(&flake_dir, &hash) {
+                app.screen = Screen::Result(ResultState {
+                    is_success: true,
+                    title: "NOTHING TO TRIM".to_string(),
+                    message: format!(
+                        "Commit {hash} is already the latest commit (HEAD). No subsequent commits to squash."
+                    ),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+                return Ok(());
+            }
+
             let r1 = git::git_reset_soft(&flake_dir, needs_sudo, &hash);
             let r2 = if r1.is_ok() {
+                if !git::has_staged_changes(&flake_dir).unwrap_or(false) {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: true,
+                        title: "NOTHING TO TRIM".to_string(),
+                        message: format!(
+                            "No changes staged after soft reset to {hash}. Working tree matches target."
+                        ),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                    return Ok(());
+                }
                 git::git_commit(&flake_dir, needs_sudo, &msg)
             } else {
                 r1

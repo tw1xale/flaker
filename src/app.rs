@@ -1729,10 +1729,11 @@ impl App {
             };
 
         if let Some((hash, file_opt, is_patch)) = action_to_take {
+            let has_parent = git::has_parent_commit(&self.flake_dir, &hash);
             let is_rollback = if let Some(ref file) = file_opt {
-                git::is_file_identical_to_head(&self.flake_dir, &hash, file)
+                git::is_file_identical_to_head(&self.flake_dir, &hash, file) && has_parent
             } else {
-                git::is_commit_identical_to_head(&self.flake_dir, &hash)
+                git::is_commit_identical_to_head(&self.flake_dir, &hash) && has_parent
             };
             let target_ref = if is_rollback {
                 format!("{hash}~1")
@@ -1847,15 +1848,16 @@ pub fn filter_commits(commits: &[String], query: &str) -> Vec<(String, Vec<usize
     let mut results = Vec::new();
 
     for commit in commits {
-        let commit_lower: Vec<char> = commit.to_lowercase().chars().collect();
-
         let mut q_idx = 0;
         let mut matched_indices = Vec::new();
 
-        for (c_idx, &c) in commit_lower.iter().enumerate() {
-            if q_idx < query_lower.len() && c == query_lower[q_idx] {
-                matched_indices.push(c_idx);
-                q_idx += 1;
+        for (c_idx, c) in commit.chars().enumerate() {
+            if q_idx < query_lower.len() {
+                let lower_chars: Vec<char> = c.to_lowercase().collect();
+                if lower_chars.contains(&query_lower[q_idx]) {
+                    matched_indices.push(c_idx);
+                    q_idx += 1;
+                }
             }
         }
 
@@ -1900,6 +1902,21 @@ mod tests {
         let commits = vec!["2b813b0 │ 2 hours ago │ Initial commit".to_string()];
         let result = filter_commits(&commits, "nonexistent");
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_commits_unicode() {
+        let commits = vec![
+            "1234567 │ 1 hour ago │ Исправление конфигурации".to_string(),
+            "abcdef0 │ 2 hours ago │ Update README".to_string(),
+        ];
+        let result = filter_commits(&commits, "исправ");
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].0,
+            "1234567 │ 1 hour ago │ Исправление конфигурации"
+        );
+        assert_eq!(result[0].1.len(), 6);
     }
 
     #[test]
