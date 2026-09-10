@@ -6,3 +6,4 @@ pub mod input_modal;
 pub mod menu;
 pub mod pager;
 pub mod result;
+pub mod selective;

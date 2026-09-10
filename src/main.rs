@@ -392,6 +392,184 @@ fn execute_external_task(
             },
         },
 
+        ExternalTask::SelectiveUpdateFlakeOnly(inputs) => {
+            match nix::nix_flake_update_inputs(&flake_dir, needs_sudo, &inputs) {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "SELECTIVE FLAKE UPDATE FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                    });
+                }
+                Ok(()) => {
+                    if is_git {
+                        if let Err(err) = git::git_add(&flake_dir, needs_sudo, "flake.lock") {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "GIT ADD FAILED".to_string(),
+                                message: format!("Failed to stage flake.lock: {err}"),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                            return Ok(());
+                        }
+                        let has_staged = git::has_staged_changes(&flake_dir).unwrap_or(false);
+                        if has_staged {
+                            let default_text =
+                                format!("chore(flake): update {}", inputs.join(", "));
+                            app.screen = Screen::InputModal(crate::app::InputModalState {
+                                action_name: format!("Updating {} input(s)", inputs.len()),
+                                default_text,
+                                input: tui_input::Input::default(),
+                                flow: crate::app::InputFlow::Lockfile,
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                        } else {
+                            let push_warn = try_push(&flake_dir, needs_sudo, false);
+
+                            app.screen = Screen::Result(ResultState {
+                                is_success: true,
+                                title: "FLAKE INPUTS UP TO DATE".to_string(),
+                                message: format!(
+                                    "Inputs ({}) are already up to date{push_warn}",
+                                    inputs.join(", ")
+                                ),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                        }
+                    } else {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "FLAKE INPUTS UPDATED".to_string(),
+                            message: format!(
+                                "Successfully updated input(s): {}",
+                                inputs.join(", ")
+                            ),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                        });
+                    }
+                }
+            }
+        }
+
+        ExternalTask::SelectiveFullCycleCommitAndSwitch(inputs, msg) => {
+            match nix::nix_flake_update_inputs(&flake_dir, needs_sudo, &inputs) {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "SELECTIVE FLAKE UPDATE FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                    });
+                }
+                Ok(()) => {
+                    if is_git {
+                        if let Err(err) = git::git_add(&flake_dir, needs_sudo, ".") {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "GIT ADD FAILED".to_string(),
+                                message: format!("Failed to stage changes: {err}"),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                            return Ok(());
+                        }
+
+                        if let Err(err) = git::git_commit(&flake_dir, needs_sudo, &msg) {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "GIT COMMIT FAILED".to_string(),
+                                message: err.to_string(),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                            return Ok(());
+                        }
+                    }
+
+                    match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                        Err(err) => {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "REBUILD FAILED".to_string(),
+                                message: err.to_string(),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                        }
+                        Ok(()) => {
+                            let push_warn = if is_git {
+                                try_push(&flake_dir, needs_sudo, false)
+                            } else {
+                                String::new()
+                            };
+
+                            app.screen = Screen::Result(ResultState {
+                                is_success: true,
+                                title: "SELECTIVE FULL CYCLE COMPLETED".to_string(),
+                                message: format!(
+                                    "Selected input(s) ({}) updated, system switched and activated{push_warn}",
+                                    inputs.join(", ")
+                                ),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        ExternalTask::SelectiveFullCycleSwitchOnly(inputs) => {
+            match nix::nix_flake_update_inputs(&flake_dir, needs_sudo, &inputs) {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "SELECTIVE FLAKE UPDATE FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                    });
+                }
+                Ok(()) => match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                    Err(err) => {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: false,
+                            title: "REBUILD FAILED".to_string(),
+                            message: err.to_string(),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                        });
+                    }
+                    Ok(()) => {
+                        let push_warn = if is_git {
+                            try_push(&flake_dir, needs_sudo, false)
+                        } else {
+                            String::new()
+                        };
+
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "SELECTIVE FULL CYCLE COMPLETED".to_string(),
+                            message: format!(
+                                "Selected input(s) ({}) updated, system switched and activated{push_warn}",
+                                inputs.join(", ")
+                            ),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
+                        });
+                    }
+                },
+            }
+        }
+
         ExternalTask::TestBuild => match nix::nixos_rebuild_build(&flake_target, &flake_dir) {
             Err(err) => {
                 app.screen = Screen::Result(ResultState {
@@ -595,6 +773,7 @@ fn execute_external_task(
                             on_confirm: crate::app::PendingAction::RestoreCommitAndSwitch(
                                 hash, file,
                             ),
+                            on_secondary: None,
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                             on_cancel_screen: Some(cancel_screen),
                         });
@@ -650,6 +829,7 @@ fn execute_external_task(
                                 hash,
                                 target_name,
                             ),
+                            on_secondary: None,
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                             on_cancel_screen: Some(cancel_screen),
                         });
