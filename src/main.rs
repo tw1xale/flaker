@@ -168,7 +168,7 @@ fn execute_external_task(
                     items,
                     filtered_indices,
                     search_input: tui_input::Input::default(),
-                    cursor: 0,
+                    scroll_offset: 0,
                     on_confirm_task: Some(Box::new(on_confirm_task)),
                     return_screen: Box::new(return_screen),
                     title_suffix: title_suffix.to_string(),

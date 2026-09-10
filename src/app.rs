@@ -138,7 +138,7 @@ pub struct ClosureDiffState {
     pub items: Vec<crate::actions::nix::ClosureDiffItem>,
     pub filtered_indices: Vec<usize>,
     pub search_input: Input,
-    pub cursor: usize,
+    pub scroll_offset: usize,
     pub on_confirm_task: Option<Box<ExternalTask>>,
     pub return_screen: Box<Screen>,
     pub title_suffix: String,
@@ -637,7 +637,7 @@ impl App {
                 }
                 ScreenTag::ClosureDiff => {
                     if let Screen::ClosureDiff(ref mut state) = self.screen {
-                        state.cursor = state.cursor.saturating_sub(1);
+                        state.scroll_offset = state.scroll_offset.saturating_sub(1);
                     }
                 }
                 ScreenTag::TopMenu if self.top_menu_index > 0 => {
@@ -708,10 +708,11 @@ impl App {
                     }
                 }
                 ScreenTag::ClosureDiff => {
-                    if let Screen::ClosureDiff(ref mut state) = self.screen
-                        && state.cursor + 1 < state.filtered_indices.len()
-                    {
-                        state.cursor += 1;
+                    if let Screen::ClosureDiff(ref mut state) = self.screen {
+                        let max_scroll = state.filtered_indices.len().saturating_sub(1);
+                        if state.scroll_offset < max_scroll {
+                            state.scroll_offset += 1;
+                        }
                     }
                 }
                 ScreenTag::TopMenu if self.top_menu_index + 1 < 4 => {
@@ -958,7 +959,7 @@ impl App {
             if !state.search_input.value().is_empty() {
                 state.search_input = Input::default();
                 state.filtered_indices = (0..state.items.len()).collect();
-                state.cursor = 0;
+                state.scroll_offset = 0;
             } else {
                 crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
                 self.screen = *state.return_screen.clone();
@@ -970,7 +971,7 @@ impl App {
             if !state.search_input.value().is_empty() {
                 state.search_input = Input::default();
                 state.filtered_indices = (0..state.items.len()).collect();
-                state.cursor = 0;
+                state.scroll_offset = 0;
                 return;
             }
             crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
@@ -991,47 +992,38 @@ impl App {
         let is_up = key.code == KeyCode::Up
             || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p'));
         if is_up {
-            if state.cursor > 0 {
-                state.cursor -= 1;
-            } else if !state.filtered_indices.is_empty() {
-                state.cursor = state.filtered_indices.len().saturating_sub(1);
-            }
+            state.scroll_offset = state.scroll_offset.saturating_sub(1);
             return;
         }
 
         let is_down = key.code == KeyCode::Down
             || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('n'));
         if is_down {
-            if state.cursor + 1 < state.filtered_indices.len() {
-                state.cursor += 1;
-            } else {
-                state.cursor = 0;
+            let max_scroll = state.filtered_indices.len().saturating_sub(1);
+            if state.scroll_offset < max_scroll {
+                state.scroll_offset += 1;
             }
             return;
         }
 
         if key.code == KeyCode::PageUp {
-            state.cursor = state.cursor.saturating_sub(10);
+            state.scroll_offset = state.scroll_offset.saturating_sub(10);
             return;
         }
 
         if key.code == KeyCode::PageDown {
-            if !state.filtered_indices.is_empty() {
-                state.cursor =
-                    (state.cursor + 10).min(state.filtered_indices.len().saturating_sub(1));
-            }
+            let max_scroll = state.filtered_indices.len().saturating_sub(1);
+            state.scroll_offset = (state.scroll_offset + 10).min(max_scroll);
             return;
         }
 
         if key.code == KeyCode::Home {
-            state.cursor = 0;
+            state.scroll_offset = 0;
             return;
         }
 
         if key.code == KeyCode::End {
-            if !state.filtered_indices.is_empty() {
-                state.cursor = state.filtered_indices.len().saturating_sub(1);
-            }
+            state.scroll_offset = state.filtered_indices.len().saturating_sub(1);
             return;
         }
 
@@ -1053,7 +1045,7 @@ impl App {
                 })
                 .map(|(idx, _)| idx)
                 .collect();
-            state.cursor = 0;
+            state.scroll_offset = 0;
         }
     }
 
@@ -2697,7 +2689,7 @@ mod tests {
             items,
             filtered_indices: vec![0, 1],
             search_input: Input::default(),
-            cursor: 0,
+            scroll_offset: 0,
             on_confirm_task: Some(Box::new(ExternalTask::ApplySwitchedSystem {
                 return_screen: SubMenuKind::Updates,
                 success_title: "SUCCESS".to_string(),
@@ -2707,22 +2699,22 @@ mod tests {
             title_suffix: "Test Preview".to_string(),
         });
 
-        // Down moves cursor to 1
+        // Down scrolls to 1
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         if let Screen::ClosureDiff(ref state) = app.screen {
-            assert_eq!(state.cursor, 1);
+            assert_eq!(state.scroll_offset, 1);
         }
 
-        // Down at bottom wraps to 0
+        // Down at bottom clamps at max_scroll (1)
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         if let Screen::ClosureDiff(ref state) = app.screen {
-            assert_eq!(state.cursor, 0);
+            assert_eq!(state.scroll_offset, 1);
         }
 
-        // Up at top wraps to 1
+        // Up scrolls back to 0
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         if let Screen::ClosureDiff(ref state) = app.screen {
-            assert_eq!(state.cursor, 1);
+            assert_eq!(state.scroll_offset, 0);
         }
 
         // Esc cancels and restores return_screen (Screen::TopMenu)
@@ -2756,7 +2748,7 @@ mod tests {
             items,
             filtered_indices: vec![0, 1],
             search_input: Input::default(),
-            cursor: 0,
+            scroll_offset: 0,
             on_confirm_task: None,
             return_screen: Box::new(Screen::TopMenu),
             title_suffix: "Test".to_string(),
@@ -2807,7 +2799,7 @@ mod tests {
             items,
             filtered_indices: vec![0],
             search_input: Input::default(),
-            cursor: 0,
+            scroll_offset: 0,
             on_confirm_task: Some(Box::new(task.clone())),
             return_screen: Box::new(Screen::TopMenu),
             title_suffix: "Switch".to_string(),
@@ -2847,7 +2839,7 @@ mod tests {
             items,
             filtered_indices: vec![0, 1],
             search_input: Input::default(),
-            cursor: 0,
+            scroll_offset: 0,
             on_confirm_task: None,
             return_screen: Box::new(Screen::TopMenu),
             title_suffix: "Test".to_string(),
