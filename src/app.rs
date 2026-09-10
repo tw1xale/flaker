@@ -2296,6 +2296,7 @@ mod tests {
     #[test]
     fn test_selective_update_exclude_flow() {
         let mut app = App::new();
+        app.is_git = true;
         let inputs = vec![
             crate::actions::nix::FlakeInput {
                 name: "nixpkgs".to_string(),
@@ -2345,6 +2346,34 @@ mod tests {
         assert!(matches!(
             app.pending_external_task,
             ExternalTask::SelectiveFullCycleCommitAndSwitch(ref inps, _) if inps == &vec!["home-manager".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_selective_update_non_git_full_cycle() {
+        let mut app = App::new();
+        app.is_git = false;
+
+        app.screen = Screen::Confirm(ConfirmState {
+            title: "Test".to_string(),
+            lines: vec![],
+            affirmative_label: "Lockfile".to_string(),
+            negative_label: "Full Cycle".to_string(),
+            selected_button: 1,
+            is_danger: false,
+            on_confirm: PendingAction::SelectiveUpdateLockfile(vec!["nixpkgs".to_string()]),
+            on_secondary: Some(PendingAction::SelectiveFullCycle(vec![
+                "nixpkgs".to_string(),
+            ])),
+            return_screen: Box::new(Screen::TopMenu),
+            on_cancel_screen: None,
+        });
+
+        // When is_git is false, selecting button 1 directly sets SelectiveFullCycleSwitchOnly
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::SelectiveFullCycleSwitchOnly(ref inps) if inps == &vec!["nixpkgs".to_string()]
         ));
     }
 
