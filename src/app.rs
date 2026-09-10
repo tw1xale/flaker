@@ -218,7 +218,6 @@ pub enum ExternalTask {
     RestoreFile(String, String),
     RestorePatch(String, Option<String>),
     RestoreCommitAndSwitch(String, String, String),
-    BuildAndPreviewClosureDiff,
     ApplySwitchedSystem {
         return_screen: SubMenuKind,
         success_title: String,
@@ -382,7 +381,6 @@ impl App {
                                 theme::ICON_PATCH
                             ),
                             format!("{}  Test Build (Dry Run / Build)", theme::ICON_TEST_BUILD),
-                            format!("{}  Preview Closure Diff (Build & Diff)", theme::ICON_DIFF),
                             format!("{}  Back", theme::ICON_BACK),
                         ],
                     ),
@@ -732,7 +730,7 @@ impl App {
 
     pub fn submenu_item_count(&self, kind: SubMenuKind) -> usize {
         match kind {
-            SubMenuKind::Updates => 7,
+            SubMenuKind::Updates => 6,
             SubMenuKind::SelectiveUpdate => 3,
             SubMenuKind::Maintenance => 3,
             SubMenuKind::GitHistory => 6,
@@ -867,7 +865,6 @@ impl App {
                     self.screen = Screen::SubMenu(SubMenuKind::SelectiveUpdate);
                 }
                 4 => self.start_test_build(),
-                5 => self.start_preview_closure_diff(),
                 _ => self.screen = Screen::TopMenu,
             },
             SubMenuKind::SelectiveUpdate => match index {
@@ -949,10 +946,6 @@ impl App {
         self.pending_external_task = ExternalTask::TestBuild;
     }
 
-    fn start_preview_closure_diff(&mut self) {
-        self.pending_external_task = ExternalTask::BuildAndPreviewClosureDiff;
-    }
-
     fn handle_closure_diff_key(&mut self, key: KeyEvent) {
         let Screen::ClosureDiff(ref mut state) = self.screen else {
             return;
@@ -986,10 +979,10 @@ impl App {
         }
 
         if key.code == KeyCode::Enter {
-            crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
             if let Some(task) = state.on_confirm_task.take() {
                 self.pending_external_task = *task;
             } else {
+                crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
                 self.screen = *state.return_screen.clone();
             }
             return;
