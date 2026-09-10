@@ -1306,6 +1306,9 @@ impl App {
                     if let Some(val) = state.selected.get_mut(state.cursor) {
                         *val = !*val;
                     }
+                    if state.cursor + 1 < state.inputs.len() {
+                        state.cursor += 1;
+                    }
                     return;
                 } else if key.code == KeyCode::Char('a') {
                     state.selected.fill(true);
@@ -2278,17 +2281,12 @@ mod tests {
             return_screen: Box::new(Screen::TopMenu),
         });
 
-        // Space toggles index 0 (nixpkgs)
+        // Space toggles index 0 (nixpkgs) and advances cursor down to 1 (yazi-style)
         app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         if let Screen::SelectiveUpdate(ref state) = app.screen {
             assert!(state.selected[0]);
             assert!(!state.selected[1]);
             assert!(!state.selected[2]);
-        }
-
-        // Down arrow moves cursor to home-manager
-        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        if let Screen::SelectiveUpdate(ref state) = app.screen {
             assert_eq!(state.cursor, 1);
         }
 
@@ -2443,5 +2441,53 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(app.screen, Screen::Result(ref res) if !res.is_success));
+    }
+
+    #[test]
+    fn test_selective_update_space_advances_cursor() {
+        let mut app = App::new();
+        let inputs = vec![
+            crate::actions::nix::FlakeInput {
+                name: "pkg1".to_string(),
+                details: String::new(),
+            },
+            crate::actions::nix::FlakeInput {
+                name: "pkg2".to_string(),
+                details: String::new(),
+            },
+            crate::actions::nix::FlakeInput {
+                name: "pkg3".to_string(),
+                details: String::new(),
+            },
+        ];
+
+        app.screen = Screen::SelectiveUpdate(SelectiveUpdateState {
+            mode: SelectiveMode::Include,
+            inputs,
+            selected: vec![false, false, false],
+            cursor: 0,
+            return_screen: Box::new(Screen::TopMenu),
+        });
+
+        // First space toggles pkg1 and advances cursor to 1
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert_eq!(state.selected, vec![true, false, false]);
+            assert_eq!(state.cursor, 1);
+        }
+
+        // Second space toggles pkg2 and advances cursor to 2
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert_eq!(state.selected, vec![true, true, false]);
+            assert_eq!(state.cursor, 2);
+        }
+
+        // Third space toggles pkg3 and stays at cursor 2 (last item)
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        if let Screen::SelectiveUpdate(ref state) = app.screen {
+            assert_eq!(state.selected, vec![true, true, true]);
+            assert_eq!(state.cursor, 2);
+        }
     }
 }
