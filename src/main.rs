@@ -592,7 +592,9 @@ fn execute_external_task(
                             negative_label: "Keep in Working Tree".to_string(),
                             selected_button: 1,
                             is_danger: false,
-                            on_confirm: crate::app::PendingAction::RestoreCommitAndSwitch(hash, file),
+                            on_confirm: crate::app::PendingAction::RestoreCommitAndSwitch(
+                                hash, file,
+                            ),
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                             on_cancel_screen: Some(cancel_screen),
                         });

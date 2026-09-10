@@ -181,9 +181,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
                         Style::default().fg(theme.text)
                     };
 
-                    let display_str = if ch == '\t' {
-                        " ".to_string()
-                    } else if (ch as u32) < 32 {
+                    let display_str = if ch == '\t' || (ch as u32) < 32 {
                         " ".to_string()
                     } else {
                         ch.to_string()

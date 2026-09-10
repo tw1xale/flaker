@@ -180,7 +180,9 @@ pub fn get_recent_commits(dir: &Path) -> Result<Vec<String>> {
 /// Retrieves working directory and staged diffs (read-only, no sudo).
 pub fn get_diff(dir: &Path) -> Result<String> {
     let mut unstaged_cmd = Command::new("git");
-    unstaged_cmd.args(["diff", "--color=never"]).current_dir(dir);
+    unstaged_cmd
+        .args(["diff", "--color=never"])
+        .current_dir(dir);
     let unstaged = run_silent(&mut unstaged_cmd).context("Failed to execute git diff")?;
 
     let mut staged_cmd = Command::new("git");
@@ -322,23 +324,25 @@ pub fn is_head_commit(dir: &Path, hash: &str) -> bool {
 
     let mut cmd = Command::new("git");
     cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
-    if let Ok(out) = run_silent(&mut cmd) {
-        if out.status.success() {
-            let full_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if full_head.starts_with(clean_hash) || clean_hash.starts_with(&full_head) {
-                return true;
-            }
+    if let Ok(out) = run_silent(&mut cmd)
+        && out.status.success()
+    {
+        let full_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if full_head.starts_with(clean_hash) || clean_hash.starts_with(&full_head) {
+            return true;
         }
     }
 
     let mut short_cmd = Command::new("git");
-    short_cmd.args(["rev-parse", "--short", "HEAD"]).current_dir(dir);
-    if let Ok(out) = run_silent(&mut short_cmd) {
-        if out.status.success() {
-            let short_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if short_head.starts_with(clean_hash) || clean_hash.starts_with(&short_head) {
-                return true;
-            }
+    short_cmd
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(dir);
+    if let Ok(out) = run_silent(&mut short_cmd)
+        && out.status.success()
+    {
+        let short_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if short_head.starts_with(clean_hash) || clean_hash.starts_with(&short_head) {
+            return true;
         }
     }
 
@@ -346,10 +350,12 @@ pub fn is_head_commit(dir: &Path, hash: &str) -> bool {
 }
 
 /// Checks if the given commit reference has a parent commit (i.e. not an initial/root commit).
+#[cfg(test)]
 pub fn has_parent_commit(dir: &Path, hash: &str) -> bool {
     let parent_ref = format!("{hash}~1");
     let mut cmd = Command::new("git");
-    cmd.args(["rev-parse", "--verify", &parent_ref]).current_dir(dir);
+    cmd.args(["rev-parse", "--verify", &parent_ref])
+        .current_dir(dir);
     if let Ok(out) = run_silent(&mut cmd) {
         out.status.success()
     } else {
@@ -368,8 +374,16 @@ pub fn is_file_identical_to_head(dir: &Path, hash: &str, file: &str) -> bool {
     }
 
     let mut cmd = Command::new("git");
-    cmd.args(["diff", "--color=never", "--quiet", "HEAD", clean_hash, "--", file])
-        .current_dir(dir);
+    cmd.args([
+        "diff",
+        "--color=never",
+        "--quiet",
+        "HEAD",
+        clean_hash,
+        "--",
+        file,
+    ])
+    .current_dir(dir);
     if let Ok(out) = run_silent(&mut cmd) {
         // exit code 0 means no differences between HEAD and clean_hash for this file
         out.status.success()

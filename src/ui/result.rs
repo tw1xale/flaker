@@ -25,9 +25,9 @@ pub fn render_result(
     };
 
     let popup_width = 68.min(area.width.saturating_sub(4));
-    let msg_lines =
-        (message.len() / (popup_width as usize - 4)).max(1) as u16 + message.lines().count() as u16;
-    let popup_height = (msg_lines + 6).min(area.height.saturating_sub(2)).max(8);
+    let wrap_width = (popup_width as usize).saturating_sub(4).max(1);
+    let msg_lines = (message.len() / wrap_width).max(1) as u16 + message.lines().count() as u16;
+    let popup_height = (msg_lines + 6).min(area.height.saturating_sub(2)).max(1);
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
@@ -55,7 +55,7 @@ pub fn render_result(
     };
 
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
-        format!("{}  {}", title_icon, title),
+        format!("{title_icon}  {title}"),
         Style::default()
             .fg(border_color)
             .add_modifier(Modifier::BOLD),
@@ -81,4 +81,51 @@ pub fn render_result(
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
     frame.render_widget(hint_p, chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn test_render_result_small_area_no_panic() {
+        let backend = TestBackend::new(4, 4);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::default();
+
+        let res = terminal.draw(|f| {
+            render_result(
+                f,
+                f.area(),
+                true,
+                "TEST TITLE",
+                "Some message that is relatively long",
+                "Press Enter",
+                &theme,
+            );
+        });
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_render_result_standard_area() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = Theme::default();
+
+        let res = terminal.draw(|f| {
+            render_result(
+                f,
+                f.area(),
+                false,
+                "ERROR TITLE",
+                "Operation failed with error description",
+                "Press Enter to return",
+                &theme,
+            );
+        });
+        assert!(res.is_ok());
+    }
 }

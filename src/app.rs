@@ -1489,7 +1489,9 @@ impl App {
                 let (title, line_desc, button_label) = if is_rollback {
                     (
                         format!("{}  ROLLBACK FILE: {}", theme::ICON_SOFT_REVERT, file),
-                        format!("Revert changes to '{file}' made in {hash} (restore from parent commit {target_ref})?"),
+                        format!(
+                            "Revert changes to '{file}' made in {hash} (restore from parent commit {target_ref})?"
+                        ),
                         "Rollback File".to_string(),
                     )
                 } else {

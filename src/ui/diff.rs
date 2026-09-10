@@ -103,10 +103,11 @@ pub fn prettify_diff(raw: &str) -> Vec<String> {
     let mut lines = expanded.lines().peekable();
 
     // 1. Commit metadata parsing (if starting with "commit <hash>")
-    if lines.peek().is_some_and(|l| l.starts_with("commit ")) {
-        let commit_line = lines.next().unwrap();
+    if lines.peek().is_some_and(|l| l.starts_with("commit "))
+        && let Some(commit_line) = lines.next()
+    {
         let hash = commit_line.strip_prefix("commit ").unwrap_or("").trim();
-        let short_hash = if hash.len() > 8 { &hash[..8] } else { hash };
+        let short_hash: String = hash.chars().take(8).collect();
         result.push(format!("§§meta:Commit:{short_hash}"));
 
         while let Some(&line) = lines.peek() {
@@ -345,7 +346,10 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(s[1..].to_string(), Style::default().fg(theme.success)),
+            Span::styled(
+                s.strip_prefix('+').unwrap_or("").to_string(),
+                Style::default().fg(theme.success),
+            ),
         ])
     } else if s.starts_with('-') && !s.starts_with("---") {
         Line::from(vec![
@@ -355,7 +359,10 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
                     .fg(theme.danger)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(s[1..].to_string(), Style::default().fg(theme.danger)),
+            Span::styled(
+                s.strip_prefix('-').unwrap_or("").to_string(),
+                Style::default().fg(theme.danger),
+            ),
         ])
     } else if s.contains('|') && (s.contains('+') || s.contains('-')) {
         let parts: Vec<&str> = s.splitn(2, '|').collect();
@@ -402,7 +409,10 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
                 .add_modifier(Modifier::BOLD),
         ))
     } else if s.starts_with("Author:") || s.starts_with("Date:") {
-        Line::from(Span::styled(s.to_string(), Style::default().fg(theme.neutral_text)))
+        Line::from(Span::styled(
+            s.to_string(),
+            Style::default().fg(theme.neutral_text),
+        ))
     } else if s.contains("(current)") {
         Line::from(Span::styled(
             s.to_string(),
@@ -551,7 +561,8 @@ index 0000000..1234567
 
     #[test]
     fn test_prettify_diff_with_tabs() {
-        let raw = "diff --git a/file.lua b/file.lua\n@@ -1,2 +1,2 @@\n-\told_code()\n+\tnew_code()\n";
+        let raw =
+            "diff --git a/file.lua b/file.lua\n@@ -1,2 +1,2 @@\n-\told_code()\n+\tnew_code()\n";
         let prettified = prettify_diff(raw);
         assert!(prettified.iter().any(|l| l == "-   old_code()"));
         assert!(prettified.iter().any(|l| l == "+   new_code()"));
@@ -600,4 +611,3 @@ index 0000000..1234567
         }
     }
 }
-
