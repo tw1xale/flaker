@@ -146,7 +146,11 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     // Items list
     if state.filtered_indices.is_empty() {
         let msg = if state.items.is_empty() {
-            "No package differences detected between active system and new build (Identical closure)."
+            if !std::path::Path::new("/run/current-system").exists() {
+                "No active system profile (/run/current-system) found to compare against."
+            } else {
+                "No package differences detected between active system and new build (Identical closure)."
+            }
         } else {
             "No packages matched your search query."
         };
@@ -159,7 +163,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         frame.render_widget(empty_p, chunks[3]);
     } else {
         let max_visible = chunks[3].height as usize;
-        let scroll_offset = if state.cursor >= max_visible {
+        let scroll_offset = if max_visible > 0 && state.cursor >= max_visible {
             state.cursor.saturating_sub(max_visible).saturating_add(1)
         } else {
             0
@@ -278,17 +282,20 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     }
 
     // Actions & hint footer
-    let hint_line = Line::from(vec![
-        Span::styled(
+    let mut hint_spans = Vec::new();
+    if state.on_confirm_task.is_some() {
+        hint_spans.push(Span::styled(
             " [Enter] ",
             Style::default()
                 .fg(theme.selected)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
+        ));
+        hint_spans.push(Span::styled(
             "Switch to Configuration  •  ",
             Style::default().fg(theme.text),
-        ),
+        ));
+    }
+    hint_spans.extend(vec![
         Span::styled(
             "[Esc] ",
             Style::default()
@@ -299,6 +306,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         Span::styled("Type to Filter  •  ", Style::default().fg(theme.faint_hint)),
         Span::styled("↑/↓ Navigate", Style::default().fg(theme.faint_hint)),
     ]);
+    let hint_line = Line::from(hint_spans);
     let hint_p = Paragraph::new(hint_line)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });

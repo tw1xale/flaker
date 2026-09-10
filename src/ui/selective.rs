@@ -83,8 +83,8 @@ pub fn render_selective(
 
     // Input list items
     let max_visible = chunks[2].height as usize;
-    let scroll_offset = if state.cursor >= max_visible {
-        state.cursor - max_visible + 1
+    let scroll_offset = if max_visible > 0 && state.cursor >= max_visible {
+        state.cursor.saturating_sub(max_visible).saturating_add(1)
     } else {
         0
     };

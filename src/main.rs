@@ -842,109 +842,99 @@ fn execute_external_task(
 
         ExternalTask::ApplySoftRevertSwitch { hash, msg } => {
             nix::clean_result_link(&flake_dir, needs_sudo);
-            if is_git && let Err(err) = git::git_commit(&flake_dir, needs_sudo, &msg) {
+            let has_staged = if is_git {
+                git::has_staged_changes(&flake_dir).unwrap_or(false)
+            } else {
+                false
+            };
+
+            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
                 app.screen = Screen::Result(ResultState {
                     is_success: false,
                     title: "GIT COMMIT FAILED".to_string(),
-                    message: format!("Failed to record soft revert commit: {err}"),
+                    message: "Failed to record soft revert commit".to_string(),
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                 });
                 return Ok(());
             }
-            let push_res = git::git_push(&flake_dir, needs_sudo, false);
-            if let Err(err) = push_res {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT PUSH AFTER SOFT REVERT FAILED".to_string(),
-                    message: format!("Soft revert committed locally but push failed: {err}"),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
-            } else {
-                match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
-                    Err(err) => {
-                        app.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "REBUILD AFTER SOFT REVERT FAILED".to_string(),
-                            message: err.to_string(),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                        });
-                    }
-                    Ok(()) => {
-                        app.screen = Screen::Result(ResultState {
-                            is_success: true,
-                            title: "SOFT REVERT SUCCESSFUL".to_string(),
-                            message: format!(
-                                "Working tree reverted to {hash}, committed, and system activated"
-                            ),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                        });
-                    }
+
+            match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "REBUILD AFTER SOFT REVERT FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+                Ok(()) => {
+                    let push_warn = if is_git && has_staged {
+                        try_push(&flake_dir, needs_sudo, false)
+                    } else {
+                        String::new()
+                    };
+
+                    app.screen = Screen::Result(ResultState {
+                        is_success: true,
+                        title: "SOFT REVERT SUCCESSFUL".to_string(),
+                        message: format!(
+                            "Working tree reverted to {hash}, committed, and system activated{push_warn}"
+                        ),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
                 }
             }
         }
 
         ExternalTask::ApplyRestoreFileSwitch { hash, file, msg } => {
             nix::clean_result_link(&flake_dir, needs_sudo);
-            let add_res = if is_git {
-                git::git_add(&flake_dir, needs_sudo, ".")
+            let has_staged = if is_git {
+                git::git_add(&flake_dir, needs_sudo, ".").is_ok()
+                    && git::has_staged_changes(&flake_dir).unwrap_or(false)
             } else {
-                Ok(())
+                false
             };
 
-            if add_res.is_err()
-                || (is_git && git::git_commit(&flake_dir, needs_sudo, &msg).is_err())
-            {
+            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
                 app.screen = Screen::Result(ResultState {
                     is_success: false,
                     title: "GIT COMMIT FAILED".to_string(),
                     message: format!("Failed to record commit restoring {file} from {hash}"),
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                 });
-            } else {
-                match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
-                    Ok(()) => {
-                        let push_warn = if is_git {
-                            try_push(&flake_dir, needs_sudo, false)
-                        } else {
-                            String::new()
-                        };
+                return Ok(());
+            }
 
-                        app.screen = Screen::Result(ResultState {
-                            is_success: true,
-                            title: "RESTORE & REBUILD SUCCESSFUL".to_string(),
-                            message: format!(
-                                "Restored {file} from {hash}, committed, and system activated{push_warn}"
-                            ),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                        });
-                    }
-                    Err(err) => {
-                        app.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "REBUILD FAILED".to_string(),
-                            message: err.to_string(),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                        });
-                    }
+            match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                Ok(()) => {
+                    let push_warn = if is_git && has_staged {
+                        try_push(&flake_dir, needs_sudo, false)
+                    } else {
+                        String::new()
+                    };
+
+                    app.screen = Screen::Result(ResultState {
+                        is_success: true,
+                        title: "RESTORE & REBUILD SUCCESSFUL".to_string(),
+                        message: format!(
+                            "Restored {file} from {hash}, committed, and system activated{push_warn}"
+                        ),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "REBUILD FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
                 }
             }
         }
 
         ExternalTask::ApplyHardResetSwitch { hash } => {
             nix::clean_result_link(&flake_dir, needs_sudo);
-            let push_res = git::git_push(&flake_dir, needs_sudo, true);
-            if let Err(err) = push_res {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT PUSH AFTER HARD RESET FAILED".to_string(),
-                    message: format!(
-                        "Hard reset applied locally to {hash} but remote push failed: {err}"
-                    ),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
-                return Ok(());
-            }
-
             match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Err(err) => {
                     app.screen = Screen::Result(ResultState {
@@ -955,10 +945,18 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
+                    let push_warn = if is_git {
+                        try_push(&flake_dir, needs_sudo, true)
+                    } else {
+                        String::new()
+                    };
+
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: "HARD ROLLBACK SUCCESSFUL".to_string(),
-                        message: format!("System and git history successfully reverted to {hash}"),
+                        message: format!(
+                            "System and git history successfully reverted to {hash}{push_warn}"
+                        ),
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                     });
                 }
