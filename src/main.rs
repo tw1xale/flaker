@@ -138,7 +138,7 @@ fn execute_external_task(
         on_confirm_task: ExternalTask,
     ) {
         nix::clean_result_link(flake_dir, needs_sudo);
-        match nix::nixos_rebuild_build_closure(flake_target, flake_dir) {
+        match nix::nixos_rebuild_build_closure(flake_target, flake_dir, needs_sudo) {
             Err(err) => {
                 app.screen = Screen::Result(ResultState {
                     is_success: false,
@@ -211,22 +211,6 @@ fn execute_external_task(
                     success_title: "SYSTEM REBUILT SUCCESSFULLY".to_string(),
                     success_message: "System successfully rebuilt, committed, and activated"
                         .to_string(),
-                },
-            );
-        }
-
-        ExternalTask::BuildAndPreviewClosureDiff => {
-            preview_closure_diff_and_wait(
-                app,
-                &flake_target,
-                &flake_dir,
-                needs_sudo,
-                "Preview",
-                Screen::SubMenu(SubMenuKind::Updates),
-                ExternalTask::ApplySwitchedSystem {
-                    return_screen: SubMenuKind::Updates,
-                    success_title: "SYSTEM ACTIVATED SUCCESSFULLY".to_string(),
-                    success_message: "System configuration successfully activated".to_string(),
                 },
             );
         }
@@ -527,25 +511,27 @@ fn execute_external_task(
             }
         }
 
-        ExternalTask::TestBuild => match nix::nixos_rebuild_build(&flake_target, &flake_dir) {
-            Err(err) => {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "TEST BUILD FAILED".to_string(),
-                    message: err.to_string(),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
-                });
+        ExternalTask::TestBuild => {
+            match nix::nixos_rebuild_build(&flake_target, &flake_dir, needs_sudo) {
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "TEST BUILD FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                    });
+                }
+                Ok(()) => {
+                    nix::clean_result_link(&flake_dir, needs_sudo);
+                    app.screen = Screen::Result(ResultState {
+                        is_success: true,
+                        title: "TEST BUILD SUCCESSFUL".to_string(),
+                        message: "The NixOS configuration built without errors".to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                    });
+                }
             }
-            Ok(()) => {
-                nix::clean_result_link(&flake_dir, needs_sudo);
-                app.screen = Screen::Result(ResultState {
-                    is_success: true,
-                    title: "TEST BUILD SUCCESSFUL".to_string(),
-                    message: "The NixOS configuration built without errors".to_string(),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
-                });
-            }
-        },
+        }
 
         ExternalTask::CleanStore => match nix::cleanup_nix_store() {
             Err(err) => {

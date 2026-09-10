@@ -189,22 +189,30 @@ pub fn clean_result_link(dir: &Path, needs_sudo: bool) {
             fs::remove_file(&result_link).is_ok()
         };
         if !removed && needs_sudo {
+            // Use -n (non-interactive) and silence stdio so sudo never blocks or corrupts the TUI
             let mut cmd = Command::new("sudo");
-            cmd.args(["rm", "-rf", &result_link.to_string_lossy()]);
+            cmd.args(["-n", "rm", "-rf", &result_link.to_string_lossy()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             let _ = cmd.status();
         }
     }
 }
 
 /// Runs a build of the NixOS configuration, returning the canonical path of the built system closure.
-pub fn nixos_rebuild_build_closure(flake_target: &str, dir: &Path) -> Result<PathBuf> {
-    let mut cmd = Command::new("sudo");
-    cmd.args(["nixos-rebuild", "build", "--flake", flake_target])
-        .current_dir(dir);
+pub fn nixos_rebuild_build_closure(
+    flake_target: &str,
+    dir: &Path,
+    needs_sudo: bool,
+) -> Result<PathBuf> {
+    let mut cmd = make_cmd("nixos-rebuild", dir, needs_sudo);
+    cmd.args(["build", "--flake", flake_target]);
 
+    let prefix = if needs_sudo { "sudo " } else { "" };
     let status = run_visible(
         "BUILDING CONFIGURATION FOR PREVIEW",
-        &format!("sudo nixos-rebuild build --flake {flake_target}"),
+        &format!("{prefix}nixos-rebuild build --flake {flake_target}"),
         &mut cmd,
     )
     .context("Failed to execute nixos-rebuild build")?;
@@ -259,14 +267,14 @@ pub fn get_system_closure_diff(new_closure: &Path) -> Result<Vec<ClosureDiffItem
 }
 
 /// Runs a test build of the NixOS configuration (builds without activating).
-pub fn nixos_rebuild_build(flake_target: &str, dir: &Path) -> Result<()> {
-    let mut cmd = Command::new("sudo");
-    cmd.args(["nixos-rebuild", "build", "--flake", flake_target])
-        .current_dir(dir);
+pub fn nixos_rebuild_build(flake_target: &str, dir: &Path, needs_sudo: bool) -> Result<()> {
+    let mut cmd = make_cmd("nixos-rebuild", dir, needs_sudo);
+    cmd.args(["build", "--flake", flake_target]);
 
+    let prefix = if needs_sudo { "sudo " } else { "" };
     let status = run_visible(
         "TEST BUILDING CONFIGURATION",
-        &format!("sudo nixos-rebuild build --flake {flake_target}"),
+        &format!("{prefix}nixos-rebuild build --flake {flake_target}"),
         &mut cmd,
     )
     .context("Failed to execute nixos-rebuild build")?;
