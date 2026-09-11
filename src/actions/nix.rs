@@ -37,6 +37,52 @@ pub fn nixos_rebuild_switch(flake_target: &str, dir: &Path) -> Result<()> {
     }
 }
 
+/// Switches to an already built NixOS system closure via --store-path.
+/// Skips flake evaluation and derivation building, activating immediately.
+pub fn nixos_rebuild_switch_store_path(closure_path: &Path, dir: &Path) -> Result<()> {
+    let mut cmd = Command::new("sudo");
+    cmd.args([
+        "nixos-rebuild",
+        "switch",
+        "--store-path",
+        &closure_path.to_string_lossy(),
+    ])
+    .current_dir(dir);
+
+    let status = run_visible(
+        "ACTIVATING PRE-BUILT SYSTEM",
+        &format!(
+            "sudo nixos-rebuild switch --store-path {}",
+            closure_path.display()
+        ),
+        &mut cmd,
+    )
+    .context("Failed to execute nixos-rebuild switch --store-path")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("nixos-rebuild switch --store-path exited with status: {status}");
+    }
+}
+
+/// Activates the system closure, preferring instant activation of pre-built `closure_path`
+/// if available, or falling back to a full `nixos-rebuild switch --flake`.
+pub fn switch_system(
+    closure_path: Option<&Path>,
+    flake_target: &str,
+    flake_dir: &Path,
+) -> Result<()> {
+    if let Some(path) = closure_path
+        && path.exists()
+        && path.join("bin/switch-to-configuration").exists()
+        && nixos_rebuild_switch_store_path(path, flake_dir).is_ok()
+    {
+        return Ok(());
+    }
+    nixos_rebuild_switch(flake_target, flake_dir)
+}
+
 /// Type of difference in closure packages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffKind {
