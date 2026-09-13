@@ -1,7 +1,7 @@
 use crate::actions::{make_cmd, run_silent, run_visible};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// Reads the current active NixOS system generation number (read-only, no sudo).
@@ -35,52 +35,6 @@ pub fn nixos_rebuild_switch(flake_target: &str, dir: &Path) -> Result<()> {
     } else {
         anyhow::bail!("nixos-rebuild switch exited with status: {status}");
     }
-}
-
-/// Switches to an already built NixOS system closure via --store-path.
-/// Skips flake evaluation and derivation building, activating immediately.
-pub fn nixos_rebuild_switch_store_path(closure_path: &Path, dir: &Path) -> Result<()> {
-    let mut cmd = Command::new("sudo");
-    cmd.args([
-        "nixos-rebuild",
-        "switch",
-        "--store-path",
-        &closure_path.to_string_lossy(),
-    ])
-    .current_dir(dir);
-
-    let status = run_visible(
-        "ACTIVATING PRE-BUILT SYSTEM",
-        &format!(
-            "sudo nixos-rebuild switch --store-path {}",
-            closure_path.display()
-        ),
-        &mut cmd,
-    )
-    .context("Failed to execute nixos-rebuild switch --store-path")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("nixos-rebuild switch --store-path exited with status: {status}");
-    }
-}
-
-/// Activates the system closure, preferring instant activation of pre-built `closure_path`
-/// if available, or falling back to a full `nixos-rebuild switch --flake`.
-pub fn switch_system(
-    closure_path: Option<&Path>,
-    flake_target: &str,
-    flake_dir: &Path,
-) -> Result<()> {
-    if let Some(path) = closure_path
-        && path.exists()
-        && path.join("bin/switch-to-configuration").exists()
-        && nixos_rebuild_switch_store_path(path, flake_dir).is_ok()
-    {
-        return Ok(());
-    }
-    nixos_rebuild_switch(flake_target, flake_dir)
 }
 
 /// Type of difference in closure packages.
@@ -246,40 +200,6 @@ pub fn clean_result_link(dir: &Path, needs_sudo: bool) {
     }
 }
 
-/// Runs a build of the NixOS configuration, returning the canonical path of the built system closure.
-pub fn nixos_rebuild_build_closure(
-    flake_target: &str,
-    dir: &Path,
-    needs_sudo: bool,
-) -> Result<PathBuf> {
-    let mut cmd = make_cmd("nixos-rebuild", dir, needs_sudo);
-    cmd.args(["build", "--flake", flake_target]);
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let status = run_visible(
-        "BUILDING CONFIGURATION FOR PREVIEW",
-        &format!("{prefix}nixos-rebuild build --flake {flake_target}"),
-        &mut cmd,
-    )
-    .context("Failed to execute nixos-rebuild build")?;
-
-    if !status.success() {
-        anyhow::bail!("nixos-rebuild build exited with status: {status}");
-    }
-
-    let result_link = dir.join("result");
-    if result_link.exists() {
-        let canonical = fs::canonicalize(&result_link)
-            .with_context(|| format!("Failed to canonicalize {}", result_link.display()))?;
-        Ok(canonical)
-    } else {
-        anyhow::bail!(
-            "Build succeeded but 'result' symlink was not found in {}",
-            dir.display()
-        );
-    }
-}
-
 /// Runs `nix store diff-closures` between two store paths (read-only, no sudo).
 pub fn diff_closures(before: &Path, after: &Path) -> Result<Vec<ClosureDiffItem>> {
     let mut cmd = Command::new("nix");
@@ -420,18 +340,20 @@ pub fn find_rebuilt_system_packages(
     rebuilts
 }
 
-/// Computes closure diff against the active system (/run/current-system).
-pub fn get_system_closure_diff(new_closure: &Path) -> Result<SystemClosureDiff> {
-    let current_system = Path::new("/run/current-system");
-    if !current_system.exists() {
+/// Computes closure diff between two system closures (or paths).
+pub fn get_closure_diff_between(
+    before_closure: &Path,
+    after_closure: &Path,
+) -> Result<SystemClosureDiff> {
+    if !before_closure.exists() || !after_closure.exists() {
         return Ok(SystemClosureDiff {
             items: Vec::new(),
             is_identical_closure: false,
         });
     }
 
-    let is_identical_closure = fs::canonicalize(current_system)
-        .and_then(|c| fs::canonicalize(new_closure).map(|n| c == n))
+    let is_identical_closure = fs::canonicalize(before_closure)
+        .and_then(|c| fs::canonicalize(after_closure).map(|n| c == n))
         .unwrap_or(false);
 
     if is_identical_closure {
@@ -441,8 +363,8 @@ pub fn get_system_closure_diff(new_closure: &Path) -> Result<SystemClosureDiff> 
         });
     }
 
-    let mut items = diff_closures(current_system, new_closure).unwrap_or_default();
-    let rebuilts = find_rebuilt_system_packages(current_system, new_closure, &items);
+    let mut items = diff_closures(before_closure, after_closure).unwrap_or_default();
+    let rebuilts = find_rebuilt_system_packages(before_closure, after_closure, &items);
     items.extend(rebuilts);
 
     Ok(SystemClosureDiff {
@@ -733,6 +655,14 @@ pub fn cleanup_nix_store() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_closure_diff_between_nonexistent() {
+        let p1 = Path::new("/nonexistent/path/1");
+        let p2 = Path::new("/nonexistent/path/2");
+        let diff = get_closure_diff_between(p1, p2).unwrap();
+        assert!(!diff.is_identical_closure);
+        assert!(diff.items.is_empty());
+    }
 
     #[test]
     fn test_get_flake_inputs_from_lock() {

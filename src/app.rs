@@ -219,93 +219,6 @@ pub enum ExternalTask {
     RestoreFile(String, String),
     RestorePatch(String, Option<String>),
     RestoreCommitAndSwitch(String, String, String),
-    ApplySwitchedSystem {
-        closure_path: Option<PathBuf>,
-        return_screen: SubMenuKind,
-        success_title: String,
-        success_message: String,
-    },
-    ApplyCommitAndSwitch {
-        closure_path: Option<PathBuf>,
-        msg: String,
-        return_screen: SubMenuKind,
-        success_title: String,
-        success_message: String,
-    },
-    ApplySelectiveFullCycle {
-        closure_path: Option<PathBuf>,
-        inputs: Vec<String>,
-        msg: Option<String>,
-    },
-    ApplySoftRevertSwitch {
-        closure_path: Option<PathBuf>,
-        hash: String,
-        msg: String,
-    },
-    ApplyRestoreFileSwitch {
-        closure_path: Option<PathBuf>,
-        hash: String,
-        file: String,
-        msg: String,
-    },
-    ApplyHardResetSwitch {
-        closure_path: Option<PathBuf>,
-        hash: String,
-    },
-}
-
-impl ExternalTask {
-    pub fn with_closure_path(self, path: PathBuf) -> Self {
-        match self {
-            Self::ApplySwitchedSystem {
-                return_screen,
-                success_title,
-                success_message,
-                ..
-            } => Self::ApplySwitchedSystem {
-                closure_path: Some(path),
-                return_screen,
-                success_title,
-                success_message,
-            },
-            Self::ApplyCommitAndSwitch {
-                msg,
-                return_screen,
-                success_title,
-                success_message,
-                ..
-            } => Self::ApplyCommitAndSwitch {
-                closure_path: Some(path),
-                msg,
-                return_screen,
-                success_title,
-                success_message,
-            },
-            Self::ApplySelectiveFullCycle { inputs, msg, .. } => Self::ApplySelectiveFullCycle {
-                closure_path: Some(path),
-                inputs,
-                msg,
-            },
-            Self::ApplySoftRevertSwitch { hash, msg, .. } => Self::ApplySoftRevertSwitch {
-                closure_path: Some(path),
-                hash,
-                msg,
-            },
-            Self::ApplyRestoreFileSwitch {
-                hash, file, msg, ..
-            } => Self::ApplyRestoreFileSwitch {
-                closure_path: Some(path),
-                hash,
-                file,
-                msg,
-            },
-            Self::ApplyHardResetSwitch { hash, .. } => Self::ApplyHardResetSwitch {
-                closure_path: Some(path),
-                hash,
-            },
-            other => other,
-        }
-    }
 }
 
 pub struct App {
@@ -2752,12 +2665,7 @@ mod tests {
             search_input: Input::default(),
             scroll_offset: 0,
             is_identical_closure: false,
-            on_confirm_task: Some(Box::new(ExternalTask::ApplySwitchedSystem {
-                closure_path: None,
-                return_screen: SubMenuKind::Updates,
-                success_title: "SUCCESS".to_string(),
-                success_message: "Done".to_string(),
-            })),
+            on_confirm_task: None,
             return_screen: Box::new(Screen::TopMenu),
             title_suffix: "Test Preview".to_string(),
         });
@@ -2853,65 +2761,54 @@ mod tests {
             raw: "curl: 8.10.0 → 8.11.0".to_string(),
         }];
 
-        let task = ExternalTask::ApplySwitchedSystem {
-            closure_path: None,
-            return_screen: SubMenuKind::Updates,
-            success_title: "DONE".to_string(),
-            success_message: "Activated".to_string(),
-        };
+        let task = ExternalTask::RebuildSwitchOnly;
 
+        app.screen = Screen::ClosureDiff(ClosureDiffState {
+            items: items.clone(),
+            filtered_indices: vec![0],
+            search_input: Input::default(),
+            scroll_offset: 0,
+            is_identical_closure: false,
+            on_confirm_task: Some(Box::new(task)),
+            return_screen: Box::new(Screen::TopMenu),
+            title_suffix: "Switch".to_string(),
+        });
+
+        // Enter confirms switch when on_confirm_task is Some
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::RebuildSwitchOnly
+        ));
+    }
+
+    #[test]
+    fn test_closure_diff_post_activation_exit() {
+        let mut app = App::new();
+        let items = vec![crate::actions::nix::ClosureDiffItem {
+            package: "curl".to_string(),
+            before_version: Some("8.10.0".to_string()),
+            after_version: Some("8.11.0".to_string()),
+            size_delta: None,
+            kind: crate::actions::nix::DiffKind::Updated,
+            raw: "curl: 8.10.0 → 8.11.0".to_string(),
+        }];
+
+        // In post-activation mode (on_confirm_task is None), Enter simply exits back to return_screen
         app.screen = Screen::ClosureDiff(ClosureDiffState {
             items,
             filtered_indices: vec![0],
             search_input: Input::default(),
             scroll_offset: 0,
             is_identical_closure: false,
-            on_confirm_task: Some(Box::new(task.clone())),
-            return_screen: Box::new(Screen::TopMenu),
-            title_suffix: "Switch".to_string(),
+            on_confirm_task: None,
+            return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+            title_suffix: "Rebuild & Switch".to_string(),
         });
 
-        // Enter confirms switch
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(
-            app.pending_external_task,
-            ExternalTask::ApplySwitchedSystem { .. }
-        ));
-    }
-
-    #[test]
-    fn test_external_task_with_closure_path() {
-        let task = ExternalTask::ApplySwitchedSystem {
-            closure_path: None,
-            return_screen: SubMenuKind::Updates,
-            success_title: "TITLE".to_string(),
-            success_message: "MSG".to_string(),
-        };
-
-        let updated = task.with_closure_path(PathBuf::from("/nix/store/test-closure"));
-        if let ExternalTask::ApplySwitchedSystem { closure_path, .. } = updated {
-            assert_eq!(closure_path, Some(PathBuf::from("/nix/store/test-closure")));
-        } else {
-            panic!("Expected ApplySwitchedSystem");
-        }
-
-        let commit_task = ExternalTask::ApplyCommitAndSwitch {
-            closure_path: None,
-            msg: "commit".to_string(),
-            return_screen: SubMenuKind::Updates,
-            success_title: "TITLE".to_string(),
-            success_message: "MSG".to_string(),
-        };
-        let updated_commit =
-            commit_task.with_closure_path(PathBuf::from("/nix/store/test-closure-2"));
-        if let ExternalTask::ApplyCommitAndSwitch { closure_path, .. } = updated_commit {
-            assert_eq!(
-                closure_path,
-                Some(PathBuf::from("/nix/store/test-closure-2"))
-            );
-        } else {
-            panic!("Expected ApplyCommitAndSwitch");
-        }
+        assert!(matches!(app.pending_external_task, ExternalTask::None));
+        assert!(matches!(app.screen, Screen::SubMenu(SubMenuKind::Updates)));
     }
 
     #[test]

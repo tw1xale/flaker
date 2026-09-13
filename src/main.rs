@@ -127,126 +127,168 @@ fn execute_external_task(
         }
     }
 
-    /// Builds the configuration, generates closure diff against active system, and shows ClosureDiff preview screen.
-    fn preview_closure_diff_and_wait(
+    fn show_post_activation_closure_diff(
         app: &mut App,
-        flake_target: &str,
-        flake_dir: &std::path::Path,
-        needs_sudo: bool,
+        before_system: Option<&std::path::Path>,
         title_suffix: &str,
-        return_screen: Screen,
-        on_confirm_task: ExternalTask,
+        return_screen: SubMenuKind,
+        success_title: &str,
+        success_message: &str,
     ) {
-        nix::clean_result_link(flake_dir, needs_sudo);
-        match nix::nixos_rebuild_build_closure(flake_target, flake_dir, needs_sudo) {
-            Err(err) => {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "BUILD FAILED".to_string(),
-                    message: err.to_string(),
-                    return_screen: Box::new(return_screen),
-                });
-            }
-            Ok(closure_path) => {
-                let diff_result = match nix::get_system_closure_diff(&closure_path) {
-                    Ok(diff) => diff,
-                    Err(err) => {
-                        nix::clean_result_link(flake_dir, needs_sudo);
-                        app.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "CLOSURE DIFF FAILED".to_string(),
-                            message: format!(
-                                "Configuration built successfully, but comparing closures failed: {err}"
-                            ),
-                            return_screen: Box::new(return_screen),
-                        });
-                        return;
-                    }
-                };
-                let filtered_indices = (0..diff_result.items.len()).collect();
-                let task = on_confirm_task.with_closure_path(closure_path);
-                app.screen = Screen::ClosureDiff(crate::app::ClosureDiffState {
-                    items: diff_result.items,
-                    filtered_indices,
-                    search_input: tui_input::Input::default(),
-                    scroll_offset: 0,
-                    is_identical_closure: diff_result.is_identical_closure,
-                    on_confirm_task: Some(Box::new(task)),
-                    return_screen: Box::new(return_screen),
-                    title_suffix: title_suffix.to_string(),
-                });
-            }
+        let after_system = std::fs::canonicalize("/run/current-system").ok();
+        let diff_result = match (before_system, after_system.as_deref()) {
+            (Some(before), Some(after)) => nix::get_closure_diff_between(before, after).ok(),
+            _ => None,
+        };
+
+        if let Some(diff) = diff_result {
+            let filtered_indices = (0..diff.items.len()).collect();
+            app.screen = Screen::ClosureDiff(crate::app::ClosureDiffState {
+                items: diff.items,
+                filtered_indices,
+                search_input: tui_input::Input::default(),
+                scroll_offset: 0,
+                is_identical_closure: diff.is_identical_closure,
+                on_confirm_task: None,
+                return_screen: Box::new(Screen::SubMenu(return_screen)),
+                title_suffix: title_suffix.to_string(),
+            });
+        } else {
+            app.screen = Screen::Result(ResultState {
+                is_success: true,
+                title: success_title.to_string(),
+                message: success_message.to_string(),
+                return_screen: Box::new(Screen::SubMenu(return_screen)),
+            });
         }
     }
 
     match task {
         ExternalTask::None => {}
 
-        // --- Build & Preview Actions (Pre-activation Closure Diff) ---
+        // --- System Rebuild and Activation Actions ---
         ExternalTask::RebuildSwitchOnly => {
-            preview_closure_diff_and_wait(
-                app,
-                &flake_target,
-                &flake_dir,
-                needs_sudo,
-                "Rebuild & Switch",
-                Screen::SubMenu(SubMenuKind::Updates),
-                ExternalTask::ApplySwitchedSystem {
-                    closure_path: None,
-                    return_screen: SubMenuKind::Updates,
-                    success_title: "SYSTEM REBUILT SUCCESSFULLY".to_string(),
-                    success_message: "System successfully rebuilt and activated".to_string(),
-                },
-            );
-        }
-
-        ExternalTask::RebuildCommitAndSwitch(msg) => {
-            preview_closure_diff_and_wait(
-                app,
-                &flake_target,
-                &flake_dir,
-                needs_sudo,
-                "Rebuild & Commit",
-                Screen::SubMenu(SubMenuKind::Updates),
-                ExternalTask::ApplyCommitAndSwitch {
-                    closure_path: None,
-                    msg,
-                    return_screen: SubMenuKind::Updates,
-                    success_title: "SYSTEM REBUILT SUCCESSFULLY".to_string(),
-                    success_message: "System successfully rebuilt, committed, and activated"
-                        .to_string(),
-                },
-            );
-        }
-
-        ExternalTask::FullCycleSwitchOnly => {
-            match nix::nix_flake_update(&flake_dir, needs_sudo) {
+            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                Ok(()) => {
+                    app.generation = nix::get_system_generation();
+                    show_post_activation_closure_diff(
+                        app,
+                        before_system.as_deref(),
+                        "Rebuild & Switch",
+                        SubMenuKind::Updates,
+                        "SYSTEM REBUILT SUCCESSFULLY",
+                        "System successfully rebuilt and activated",
+                    );
+                }
                 Err(err) => {
                     app.screen = Screen::Result(ResultState {
                         is_success: false,
-                        title: "FLAKE UPDATE FAILED".to_string(),
+                        title: "REBUILD FAILED".to_string(),
                         message: err.to_string(),
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                     });
                 }
+            }
+        }
+
+        ExternalTask::RebuildCommitAndSwitch(msg) => {
+            let has_staged = if is_git {
+                git::git_add(&flake_dir, needs_sudo, ".").is_ok()
+                    && git::has_staged_changes(&flake_dir).unwrap_or(false)
+            } else {
+                false
+            };
+
+            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
+                app.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "GIT COMMIT FAILED".to_string(),
+                    message: "Failed to record git commit before activating".to_string(),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                });
+                return Ok(());
+            }
+
+            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Ok(()) => {
-                    preview_closure_diff_and_wait(
-                        app,
-                        &flake_target,
-                        &flake_dir,
-                        needs_sudo,
-                        "Full Cycle Update",
-                        Screen::SubMenu(SubMenuKind::Updates),
-                        ExternalTask::ApplySwitchedSystem {
-                            closure_path: None,
-                            return_screen: SubMenuKind::Updates,
-                            success_title: "FULL UPDATE CYCLE COMPLETED".to_string(),
-                            success_message: "System successfully updated to latest package versions and activated".to_string(),
-                        },
-                    );
+                    let push_warn = if is_git && has_staged {
+                        try_push(&flake_dir, needs_sudo, false)
+                    } else {
+                        String::new()
+                    };
+
+                    app.generation = nix::get_system_generation();
+                    let action_desc = if is_git && has_staged {
+                        format!("System successfully rebuilt, committed, and activated{push_warn}")
+                    } else {
+                        "System successfully rebuilt and activated (working tree had no changes to commit)".to_string()
+                    };
+
+                    if !push_warn.is_empty() {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "SYSTEM REBUILT SUCCESSFULLY".to_string(),
+                            message: action_desc,
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                        });
+                    } else {
+                        show_post_activation_closure_diff(
+                            app,
+                            before_system.as_deref(),
+                            "Rebuild & Commit",
+                            SubMenuKind::Updates,
+                            "SYSTEM REBUILT SUCCESSFULLY",
+                            &action_desc,
+                        );
+                    }
+                }
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "REBUILD FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                    });
                 }
             }
         }
+
+        ExternalTask::FullCycleSwitchOnly => match nix::nix_flake_update(&flake_dir, needs_sudo) {
+            Err(err) => {
+                app.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "FLAKE UPDATE FAILED".to_string(),
+                    message: err.to_string(),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                });
+            }
+            Ok(()) => {
+                let before_system = std::fs::canonicalize("/run/current-system").ok();
+                match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                    Ok(()) => {
+                        app.generation = nix::get_system_generation();
+                        show_post_activation_closure_diff(
+                            app,
+                            before_system.as_deref(),
+                            "Full Cycle Update",
+                            SubMenuKind::Updates,
+                            "FULL UPDATE CYCLE COMPLETED",
+                            "System successfully updated to latest package versions and activated",
+                        );
+                    }
+                    Err(err) => {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: false,
+                            title: "ACTIVATION FAILED".to_string(),
+                            message: err.to_string(),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                        });
+                    }
+                }
+            }
+        },
 
         ExternalTask::FullCycleCommitAndSwitch(msg) => {
             match nix::nix_flake_update(&flake_dir, needs_sudo) {
@@ -259,21 +301,68 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    preview_closure_diff_and_wait(
-                        app,
-                        &flake_target,
-                        &flake_dir,
-                        needs_sudo,
-                        "Full Cycle Update",
-                        Screen::SubMenu(SubMenuKind::Updates),
-                        ExternalTask::ApplyCommitAndSwitch {
-                            closure_path: None,
-                            msg,
-                            return_screen: SubMenuKind::Updates,
-                            success_title: "FULL UPDATE CYCLE COMPLETED".to_string(),
-                            success_message: "System successfully updated to latest package versions, committed, and activated".to_string(),
-                        },
-                    );
+                    let has_staged = if is_git {
+                        git::git_add(&flake_dir, needs_sudo, ".").is_ok()
+                            && git::has_staged_changes(&flake_dir).unwrap_or(false)
+                    } else {
+                        false
+                    };
+
+                    if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: false,
+                            title: "GIT COMMIT FAILED".to_string(),
+                            message: "Failed to record git commit before activating".to_string(),
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                        });
+                        return Ok(());
+                    }
+
+                    let before_system = std::fs::canonicalize("/run/current-system").ok();
+                    match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                        Ok(()) => {
+                            let push_warn = if is_git && has_staged {
+                                try_push(&flake_dir, needs_sudo, false)
+                            } else {
+                                String::new()
+                            };
+
+                            app.generation = nix::get_system_generation();
+                            let action_desc = if is_git && has_staged {
+                                format!(
+                                    "System successfully updated to latest package versions, committed, and activated{push_warn}"
+                                )
+                            } else {
+                                "System successfully updated to latest package versions and activated (working tree had no changes to commit)".to_string()
+                            };
+
+                            if !push_warn.is_empty() {
+                                app.screen = Screen::Result(ResultState {
+                                    is_success: true,
+                                    title: "FULL UPDATE CYCLE COMPLETED".to_string(),
+                                    message: action_desc,
+                                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                                });
+                            } else {
+                                show_post_activation_closure_diff(
+                                    app,
+                                    before_system.as_deref(),
+                                    "Full Cycle Update",
+                                    SubMenuKind::Updates,
+                                    "FULL UPDATE CYCLE COMPLETED",
+                                    &action_desc,
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "ACTIVATION FAILED".to_string(),
+                                message: err.to_string(),
+                                return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -289,19 +378,33 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    preview_closure_diff_and_wait(
-                        app,
-                        &flake_target,
-                        &flake_dir,
-                        needs_sudo,
-                        "Selective Update",
-                        Screen::SubMenu(SubMenuKind::SelectiveUpdate),
-                        ExternalTask::ApplySelectiveFullCycle {
-                            closure_path: None,
-                            inputs,
-                            msg: None,
-                        },
-                    );
+                    let before_system = std::fs::canonicalize("/run/current-system").ok();
+                    match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                        Ok(()) => {
+                            app.generation = nix::get_system_generation();
+                            show_post_activation_closure_diff(
+                                app,
+                                before_system.as_deref(),
+                                "Selective Update",
+                                SubMenuKind::SelectiveUpdate,
+                                "SELECTIVE FULL CYCLE COMPLETED",
+                                &format!(
+                                    "Selected input(s) ({}) updated, system activated",
+                                    inputs.join(", ")
+                                ),
+                            );
+                        }
+                        Err(err) => {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "ACTIVATION FAILED".to_string(),
+                                message: err.to_string(),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -317,19 +420,71 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    preview_closure_diff_and_wait(
-                        app,
-                        &flake_target,
-                        &flake_dir,
-                        needs_sudo,
-                        "Selective Update",
-                        Screen::SubMenu(SubMenuKind::SelectiveUpdate),
-                        ExternalTask::ApplySelectiveFullCycle {
-                            closure_path: None,
-                            inputs,
-                            msg: Some(msg),
-                        },
-                    );
+                    let mut committed = false;
+                    if is_git {
+                        let _ = git::git_add(&flake_dir, needs_sudo, "flake.lock");
+                        if git::has_staged_changes(&flake_dir).unwrap_or(false) {
+                            if let Err(err) = git::git_commit(&flake_dir, needs_sudo, &msg) {
+                                app.screen = Screen::Result(ResultState {
+                                    is_success: false,
+                                    title: "GIT COMMIT FAILED".to_string(),
+                                    message: err.to_string(),
+                                    return_screen: Box::new(Screen::SubMenu(
+                                        SubMenuKind::SelectiveUpdate,
+                                    )),
+                                });
+                                return Ok(());
+                            }
+                            committed = true;
+                        }
+                    }
+
+                    let before_system = std::fs::canonicalize("/run/current-system").ok();
+                    match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                        Ok(()) => {
+                            let push_warn = if is_git && committed {
+                                try_push(&flake_dir, needs_sudo, false)
+                            } else {
+                                String::new()
+                            };
+
+                            app.generation = nix::get_system_generation();
+                            let action_desc = format!(
+                                "Selected input(s) ({}) updated, system activated{push_warn}",
+                                inputs.join(", ")
+                            );
+
+                            if !push_warn.is_empty() {
+                                app.screen = Screen::Result(ResultState {
+                                    is_success: true,
+                                    title: "SELECTIVE FULL CYCLE COMPLETED".to_string(),
+                                    message: action_desc,
+                                    return_screen: Box::new(Screen::SubMenu(
+                                        SubMenuKind::SelectiveUpdate,
+                                    )),
+                                });
+                            } else {
+                                show_post_activation_closure_diff(
+                                    app,
+                                    before_system.as_deref(),
+                                    "Selective Update",
+                                    SubMenuKind::SelectiveUpdate,
+                                    "SELECTIVE FULL CYCLE COMPLETED",
+                                    &action_desc,
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            app.screen = Screen::Result(ResultState {
+                                is_success: false,
+                                title: "ACTIVATION FAILED".to_string(),
+                                message: err.to_string(),
+                                return_screen: Box::new(Screen::SubMenu(
+                                    SubMenuKind::SelectiveUpdate,
+                                )),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -362,19 +517,67 @@ fn execute_external_task(
                 return Ok(());
             }
 
-            preview_closure_diff_and_wait(
-                app,
-                &flake_target,
-                &flake_dir,
-                needs_sudo,
-                &format!("Soft Revert to {hash}"),
-                Screen::SubMenu(SubMenuKind::GitHistory),
-                ExternalTask::ApplySoftRevertSwitch {
-                    closure_path: None,
-                    hash,
-                    msg,
-                },
-            );
+            let has_staged = if is_git {
+                git::has_staged_changes(&flake_dir).unwrap_or(false)
+            } else {
+                false
+            };
+
+            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
+                app.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "GIT COMMIT FAILED".to_string(),
+                    message: "Failed to record soft revert commit".to_string(),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+                return Ok(());
+            }
+
+            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                Ok(()) => {
+                    let push_warn = if is_git && has_staged {
+                        try_push(&flake_dir, needs_sudo, false)
+                    } else {
+                        String::new()
+                    };
+
+                    app.generation = nix::get_system_generation();
+                    let action_desc = if is_git && has_staged {
+                        format!(
+                            "Working tree reverted to {hash}, committed, and system activated{push_warn}"
+                        )
+                    } else {
+                        format!("Working tree was already at {hash}, system activated")
+                    };
+
+                    if !push_warn.is_empty() {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "SOFT REVERT SUCCESSFUL".to_string(),
+                            message: action_desc,
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                        });
+                    } else {
+                        show_post_activation_closure_diff(
+                            app,
+                            before_system.as_deref(),
+                            &format!("Soft Revert to {hash}"),
+                            SubMenuKind::GitHistory,
+                            "SOFT REVERT SUCCESSFUL",
+                            &action_desc,
+                        );
+                    }
+                }
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "REBUILD AFTER SOFT REVERT FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+            }
         }
 
         ExternalTask::RestoreCommitAndSwitch(hash, file, msg) => {
@@ -394,20 +597,68 @@ fn execute_external_task(
                 return Ok(());
             }
 
-            preview_closure_diff_and_wait(
-                app,
-                &flake_target,
-                &flake_dir,
-                needs_sudo,
-                &format!("Restore {file} from {hash}"),
-                Screen::SubMenu(SubMenuKind::GitHistory),
-                ExternalTask::ApplyRestoreFileSwitch {
-                    closure_path: None,
-                    hash,
-                    file,
-                    msg,
-                },
-            );
+            let has_staged = if is_git {
+                git::git_add(&flake_dir, needs_sudo, ".").is_ok()
+                    && git::has_staged_changes(&flake_dir).unwrap_or(false)
+            } else {
+                false
+            };
+
+            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
+                app.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "GIT COMMIT FAILED".to_string(),
+                    message: format!("Failed to record commit restoring {file} from {hash}"),
+                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                });
+                return Ok(());
+            }
+
+            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                Ok(()) => {
+                    let push_warn = if is_git && has_staged {
+                        try_push(&flake_dir, needs_sudo, false)
+                    } else {
+                        String::new()
+                    };
+
+                    app.generation = nix::get_system_generation();
+                    let action_desc = if is_git && has_staged {
+                        format!(
+                            "Restored {file} from {hash}, committed, and system activated{push_warn}"
+                        )
+                    } else {
+                        format!("File {file} was already identical to {hash}, system activated")
+                    };
+
+                    if !push_warn.is_empty() {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "RESTORE & REBUILD SUCCESSFUL".to_string(),
+                            message: action_desc,
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                        });
+                    } else {
+                        show_post_activation_closure_diff(
+                            app,
+                            before_system.as_deref(),
+                            &format!("Restore {file} from {hash}"),
+                            SubMenuKind::GitHistory,
+                            "RESTORE & REBUILD SUCCESSFUL",
+                            &action_desc,
+                        );
+                    }
+                }
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "REBUILD FAILED".to_string(),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+            }
         }
 
         ExternalTask::HardReset(hash) => {
@@ -422,18 +673,46 @@ fn execute_external_task(
                 return Ok(());
             }
 
-            preview_closure_diff_and_wait(
-                app,
-                &flake_target,
-                &flake_dir,
-                needs_sudo,
-                &format!("Hard Reset to {hash}"),
-                Screen::SubMenu(SubMenuKind::GitHistory),
-                ExternalTask::ApplyHardResetSwitch {
-                    closure_path: None,
-                    hash,
-                },
-            );
+            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
+                Ok(()) => {
+                    let push_warn = if is_git {
+                        try_push(&flake_dir, needs_sudo, true)
+                    } else {
+                        String::new()
+                    };
+
+                    app.generation = nix::get_system_generation();
+                    let action_desc =
+                        format!("Hard reset to {hash} and system activated{push_warn}");
+
+                    if !push_warn.is_empty() {
+                        app.screen = Screen::Result(ResultState {
+                            is_success: true,
+                            title: "HARD ROLLBACK SUCCESSFUL".to_string(),
+                            message: action_desc,
+                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                        });
+                    } else {
+                        show_post_activation_closure_diff(
+                            app,
+                            before_system.as_deref(),
+                            &format!("Hard Reset to {hash}"),
+                            SubMenuKind::GitHistory,
+                            "HARD ROLLBACK SUCCESSFUL",
+                            &action_desc,
+                        );
+                    }
+                }
+                Err(err) => {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: format!("HARD ROLLBACK TO {hash} FAILED"),
+                        message: err.to_string(),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                }
+            }
         }
 
         // --- Direct Non-Switching Actions ---
@@ -712,305 +991,6 @@ fn execute_external_task(
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                         });
                     }
-                }
-            }
-        }
-
-        // --- Activation Tasks (Invoked after user confirms on ClosureDiff screen) ---
-        ExternalTask::ApplySwitchedSystem {
-            closure_path,
-            return_screen,
-            success_title,
-            success_message,
-        } => {
-            let res = nix::switch_system(closure_path.as_deref(), &flake_target, &flake_dir);
-            nix::clean_result_link(&flake_dir, needs_sudo);
-            match res {
-                Ok(()) => {
-                    let push_warn = if is_git {
-                        try_push(&flake_dir, needs_sudo, false)
-                    } else {
-                        String::new()
-                    };
-
-                    app.screen = Screen::Result(ResultState {
-                        is_success: true,
-                        title: success_title,
-                        message: format!("{success_message}{push_warn}"),
-                        return_screen: Box::new(Screen::SubMenu(return_screen)),
-                    });
-                }
-                Err(err) => {
-                    app.screen = Screen::Result(ResultState {
-                        is_success: false,
-                        title: "ACTIVATION FAILED".to_string(),
-                        message: err.to_string(),
-                        return_screen: Box::new(Screen::SubMenu(return_screen)),
-                    });
-                }
-            }
-        }
-
-        ExternalTask::ApplyCommitAndSwitch {
-            closure_path,
-            msg,
-            return_screen,
-            success_title,
-            success_message,
-        } => {
-            let has_staged = if is_git {
-                git::git_add(&flake_dir, needs_sudo, ".").is_ok()
-                    && git::has_staged_changes(&flake_dir).unwrap_or(false)
-            } else {
-                false
-            };
-
-            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
-                nix::clean_result_link(&flake_dir, needs_sudo);
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT COMMIT FAILED".to_string(),
-                    message: "Failed to record git commit before activating".to_string(),
-                    return_screen: Box::new(Screen::SubMenu(return_screen)),
-                });
-                return Ok(());
-            }
-
-            let res = nix::switch_system(closure_path.as_deref(), &flake_target, &flake_dir);
-            nix::clean_result_link(&flake_dir, needs_sudo);
-            match res {
-                Ok(()) => {
-                    let push_warn = if is_git && has_staged {
-                        try_push(&flake_dir, needs_sudo, false)
-                    } else {
-                        String::new()
-                    };
-
-                    let action_desc = if is_git && has_staged {
-                        format!("{success_message}{push_warn}")
-                    } else {
-                        "System successfully rebuilt and activated (working tree had no changes to commit)".to_string()
-                    };
-
-                    app.screen = Screen::Result(ResultState {
-                        is_success: true,
-                        title: success_title,
-                        message: action_desc,
-                        return_screen: Box::new(Screen::SubMenu(return_screen)),
-                    });
-                }
-                Err(err) => {
-                    app.screen = Screen::Result(ResultState {
-                        is_success: false,
-                        title: "ACTIVATION FAILED".to_string(),
-                        message: err.to_string(),
-                        return_screen: Box::new(Screen::SubMenu(return_screen)),
-                    });
-                }
-            }
-        }
-
-        ExternalTask::ApplySelectiveFullCycle {
-            closure_path,
-            inputs,
-            msg,
-        } => {
-            let mut committed = false;
-            if let Some(msg) = msg
-                && is_git
-            {
-                let _ = git::git_add(&flake_dir, needs_sudo, "flake.lock");
-                if git::has_staged_changes(&flake_dir).unwrap_or(false) {
-                    if let Err(err) = git::git_commit(&flake_dir, needs_sudo, &msg) {
-                        nix::clean_result_link(&flake_dir, needs_sudo);
-                        app.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "GIT COMMIT FAILED".to_string(),
-                            message: err.to_string(),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
-                        });
-                        return Ok(());
-                    }
-                    committed = true;
-                }
-            }
-
-            let res = nix::switch_system(closure_path.as_deref(), &flake_target, &flake_dir);
-            nix::clean_result_link(&flake_dir, needs_sudo);
-            match res {
-                Err(err) => {
-                    app.screen = Screen::Result(ResultState {
-                        is_success: false,
-                        title: "ACTIVATION FAILED".to_string(),
-                        message: err.to_string(),
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
-                    });
-                }
-                Ok(()) => {
-                    let push_warn = if is_git && committed {
-                        try_push(&flake_dir, needs_sudo, false)
-                    } else {
-                        String::new()
-                    };
-
-                    app.screen = Screen::Result(ResultState {
-                        is_success: true,
-                        title: "SELECTIVE FULL CYCLE COMPLETED".to_string(),
-                        message: format!(
-                            "Selected input(s) ({}) updated, system activated{push_warn}",
-                            inputs.join(", ")
-                        ),
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::SelectiveUpdate)),
-                    });
-                }
-            }
-        }
-
-        ExternalTask::ApplySoftRevertSwitch {
-            closure_path,
-            hash,
-            msg,
-        } => {
-            let has_staged = if is_git {
-                git::has_staged_changes(&flake_dir).unwrap_or(false)
-            } else {
-                false
-            };
-
-            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
-                nix::clean_result_link(&flake_dir, needs_sudo);
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT COMMIT FAILED".to_string(),
-                    message: "Failed to record soft revert commit".to_string(),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
-                return Ok(());
-            }
-
-            let res = nix::switch_system(closure_path.as_deref(), &flake_target, &flake_dir);
-            nix::clean_result_link(&flake_dir, needs_sudo);
-            match res {
-                Err(err) => {
-                    app.screen = Screen::Result(ResultState {
-                        is_success: false,
-                        title: "REBUILD AFTER SOFT REVERT FAILED".to_string(),
-                        message: err.to_string(),
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                    });
-                }
-                Ok(()) => {
-                    let push_warn = if is_git && has_staged {
-                        try_push(&flake_dir, needs_sudo, false)
-                    } else {
-                        String::new()
-                    };
-
-                    let action_desc = if is_git && has_staged {
-                        format!(
-                            "Working tree reverted to {hash}, committed, and system activated{push_warn}"
-                        )
-                    } else {
-                        format!("Working tree was already at {hash}, system activated")
-                    };
-
-                    app.screen = Screen::Result(ResultState {
-                        is_success: true,
-                        title: "SOFT REVERT SUCCESSFUL".to_string(),
-                        message: action_desc,
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                    });
-                }
-            }
-        }
-
-        ExternalTask::ApplyRestoreFileSwitch {
-            closure_path,
-            hash,
-            file,
-            msg,
-        } => {
-            let has_staged = if is_git {
-                git::git_add(&flake_dir, needs_sudo, ".").is_ok()
-                    && git::has_staged_changes(&flake_dir).unwrap_or(false)
-            } else {
-                false
-            };
-
-            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
-                nix::clean_result_link(&flake_dir, needs_sudo);
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT COMMIT FAILED".to_string(),
-                    message: format!("Failed to record commit restoring {file} from {hash}"),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
-                return Ok(());
-            }
-
-            let res = nix::switch_system(closure_path.as_deref(), &flake_target, &flake_dir);
-            nix::clean_result_link(&flake_dir, needs_sudo);
-            match res {
-                Ok(()) => {
-                    let push_warn = if is_git && has_staged {
-                        try_push(&flake_dir, needs_sudo, false)
-                    } else {
-                        String::new()
-                    };
-
-                    let action_desc = if is_git && has_staged {
-                        format!(
-                            "Restored {file} from {hash}, committed, and system activated{push_warn}"
-                        )
-                    } else {
-                        format!("File {file} was already identical to {hash}, system activated")
-                    };
-
-                    app.screen = Screen::Result(ResultState {
-                        is_success: true,
-                        title: "RESTORE & REBUILD SUCCESSFUL".to_string(),
-                        message: action_desc,
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                    });
-                }
-                Err(err) => {
-                    app.screen = Screen::Result(ResultState {
-                        is_success: false,
-                        title: "REBUILD FAILED".to_string(),
-                        message: err.to_string(),
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                    });
-                }
-            }
-        }
-
-        ExternalTask::ApplyHardResetSwitch { closure_path, hash } => {
-            let res = nix::switch_system(closure_path.as_deref(), &flake_target, &flake_dir);
-            nix::clean_result_link(&flake_dir, needs_sudo);
-            match res {
-                Err(err) => {
-                    app.screen = Screen::Result(ResultState {
-                        is_success: false,
-                        title: format!("HARD ROLLBACK TO {hash} FAILED"),
-                        message: err.to_string(),
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                    });
-                }
-                Ok(()) => {
-                    let push_warn = if is_git {
-                        try_push(&flake_dir, needs_sudo, true)
-                    } else {
-                        String::new()
-                    };
-
-                    app.screen = Screen::Result(ResultState {
-                        is_success: true,
-                        title: "HARD ROLLBACK SUCCESSFUL".to_string(),
-                        message: format!(
-                            "System and git history successfully reverted to {hash}{push_warn}"
-                        ),
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                    });
                 }
             }
         }
