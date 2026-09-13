@@ -36,14 +36,24 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     .split(inner);
 
     // Title
-    let title_text = if state.title_suffix.is_empty() {
-        format!(
-            "{}  CLOSURE DIFF (PRE-ACTIVATION PREVIEW)",
-            theme::ICON_PACKAGE
-        )
+    let title_text = if state.on_confirm_task.is_some() {
+        if state.title_suffix.is_empty() {
+            format!(
+                "{}  CLOSURE DIFF (PRE-ACTIVATION PREVIEW)",
+                theme::ICON_PACKAGE
+            )
+        } else {
+            format!(
+                "{}  CLOSURE DIFF (PREVIEW) • {}",
+                theme::ICON_PACKAGE,
+                state.title_suffix
+            )
+        }
+    } else if state.title_suffix.is_empty() {
+        format!("{}  SYSTEM UPDATE SUMMARY", theme::ICON_PACKAGE)
     } else {
         format!(
-            "{}  CLOSURE DIFF (PREVIEW) • {}",
+            "{}  SYSTEM UPDATE SUMMARY • {}",
             theme::ICON_PACKAGE,
             state.title_suffix
         )
@@ -157,7 +167,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
             if !std::path::Path::new("/run/current-system").exists() {
                 "No active system profile (/run/current-system) found to compare against."
             } else if state.is_identical_closure {
-                "Active system and new build closures are completely identical (No changes)."
+                "Previous system profile and new configuration closures are completely identical (No changes)."
             } else {
                 "System configuration changed (rebuilt closure), but no package additions, removals, or version bumps detected."
             }
@@ -291,18 +301,30 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
             "Switch to Configuration  •  ",
             Style::default().fg(theme.text),
         ));
+        hint_spans.extend(vec![
+            Span::styled(
+                "[Esc] ",
+                Style::default()
+                    .fg(theme.danger)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Cancel / Abort  •  ", Style::default().fg(theme.faint_hint)),
+            Span::styled("Type to Filter  •  ", Style::default().fg(theme.faint_hint)),
+            Span::styled("↑/↓ Scroll", Style::default().fg(theme.faint_hint)),
+        ]);
+    } else {
+        hint_spans.extend(vec![
+            Span::styled(
+                " [Enter / Esc] ",
+                Style::default()
+                    .fg(theme.selected)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Back to Menu  •  ", Style::default().fg(theme.text)),
+            Span::styled("Type to Filter  •  ", Style::default().fg(theme.faint_hint)),
+            Span::styled("↑/↓ Scroll", Style::default().fg(theme.faint_hint)),
+        ]);
     }
-    hint_spans.extend(vec![
-        Span::styled(
-            "[Esc] ",
-            Style::default()
-                .fg(theme.danger)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("Cancel / Abort  •  ", Style::default().fg(theme.faint_hint)),
-        Span::styled("Type to Filter  •  ", Style::default().fg(theme.faint_hint)),
-        Span::styled("↑/↓ Scroll", Style::default().fg(theme.faint_hint)),
-    ]);
     let hint_line = Line::from(hint_spans);
     let hint_p = Paragraph::new(hint_line)
         .alignment(Alignment::Center)
