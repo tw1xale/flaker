@@ -204,7 +204,8 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
 
     // Set cursor on search query according to input.visual_cursor()
     let start_x = search_area.x + 1 + prefix_width;
-    let cursor_x = start_x + params.input.visual_cursor() as u16;
+    let cursor_x =
+        start_x.saturating_add(u16::try_from(params.input.visual_cursor()).unwrap_or(u16::MAX));
     let cursor_y = search_area.y + 1;
     if cursor_x < search_area.x + search_area.width.saturating_sub(1) {
         frame.set_cursor_position((cursor_x, cursor_y));

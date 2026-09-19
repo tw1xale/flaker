@@ -90,7 +90,7 @@ pub fn render_input_modal(
 
     // Position cursor exactly based on input.visual_cursor()
     let start_x = chunks[4].x + 2; // block left border (1) + left margin space (1)
-    let cursor_x = start_x + input.visual_cursor() as u16;
+    let cursor_x = start_x.saturating_add(u16::try_from(input.visual_cursor()).unwrap_or(u16::MAX));
     let cursor_y = chunks[4].y + 1;
     if cursor_x < chunks[4].x + chunks[4].width.saturating_sub(1)
         && cursor_y < chunks[4].y + chunks[4].height.saturating_sub(1)

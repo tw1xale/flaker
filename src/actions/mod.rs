@@ -86,9 +86,11 @@ pub fn check_needs_sudo(dir: &Path) -> bool {
 fn libc_getuid() -> u32 {
     #[cfg(unix)]
     {
+        // SAFETY: POSIX getuid() takes no arguments, cannot fail, and has no memory side effects.
         unsafe extern "C" {
             fn getuid() -> u32;
         }
+        // SAFETY: Calling POSIX getuid() has no preconditions and is always safe.
         unsafe { getuid() }
     }
     #[cfg(not(unix))]
