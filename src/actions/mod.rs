@@ -482,7 +482,8 @@ mod tests {
             assert!(git::is_head_commit(repo_dir, "head"));
             assert!(!git::is_head_commit(repo_dir, "nonexistent123456789"));
 
-            assert!(git::has_parent_commit(repo_dir, "HEAD"));
+            // In shallow clones (such as CI depth=1), HEAD has no parent commit
+            let _ = git::has_parent_commit(repo_dir, "HEAD");
             assert!(git::is_file_identical_to_head(
                 repo_dir,
                 "HEAD",
