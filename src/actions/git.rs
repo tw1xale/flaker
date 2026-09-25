@@ -76,19 +76,19 @@ pub fn has_remote(dir: &Path) -> bool {
     }
 }
 
-/// Retrieves the current git branch name, falling back to "master" (read-only, no sudo).
-pub fn get_current_branch(dir: &Path) -> String {
+/// Retrieves the current git branch name, returning None if detached HEAD (read-only, no sudo).
+pub fn get_current_branch(dir: &Path) -> Option<String> {
     let mut cmd = Command::new("git");
     cmd.args(["branch", "--show-current"]).current_dir(dir);
 
     if let Ok(out) = run_silent(&mut cmd) {
         let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if out.status.success() && !branch.is_empty() {
-            return branch;
+            return Some(branch);
         }
     }
 
-    "master".to_string()
+    None
 }
 
 /// Pushes commits to the remote repository.
@@ -97,17 +97,8 @@ pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    let branch = get_current_branch(dir);
+    let branch_opt = get_current_branch(dir);
     let force_flag = "--force-with-lease";
-
-    let mut args = vec!["push"];
-    if force {
-        args.push(force_flag);
-    }
-    args.extend(["origin", &branch]);
-
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(&args);
 
     let prefix = if needs_sudo { "sudo " } else { "" };
     let title = if force {
@@ -115,15 +106,27 @@ pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
     } else {
         "PUSHING TO REMOTE REPOSITORY"
     };
-    let desc = format!(
-        "{prefix}git push {} origin {branch}",
-        if force { force_flag } else { "" }
-    );
 
-    let status = run_visible(title, desc.trim(), &mut cmd);
+    if let Some(ref branch) = branch_opt {
+        let mut args = vec!["push"];
+        if force {
+            args.push(force_flag);
+        }
+        args.extend(["origin", branch]);
 
-    if matches!(status, Ok(ref s) if s.success()) {
-        return Ok(());
+        let mut cmd = make_cmd("git", dir, needs_sudo);
+        cmd.args(&args);
+
+        let desc = format!(
+            "{prefix}git push {} origin {branch}",
+            if force { force_flag } else { "" }
+        );
+
+        let status = run_visible(title, desc.trim(), &mut cmd);
+
+        if matches!(status, Ok(ref s) if s.success()) {
+            return Ok(());
+        }
     }
 
     // Fallback without explicit remote/branch

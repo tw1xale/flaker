@@ -1,3 +1,17 @@
+/// Expands a leading tilde (~) in a path string to the current user home directory.
+pub fn expand_tilde(path_str: &str) -> PathBuf {
+    if let Some(stripped) = path_str.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(stripped);
+        }
+    } else if path_str == "~"
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home);
+    }
+    PathBuf::from(path_str)
+}
+
 pub mod git;
 pub mod nix;
 
@@ -103,7 +117,7 @@ fn libc_getuid() -> u32 {
 pub fn discover_flake_dir() -> PathBuf {
     // 1. Explicit FLAKER_DIR / FLAKE_DIR env
     if let Ok(val) = std::env::var("FLAKER_DIR").or_else(|_| std::env::var("FLAKE_DIR")) {
-        let p = PathBuf::from(val.trim());
+        let p = expand_tilde(val.trim());
         if p.join("flake.nix").exists() || p.exists() {
             return p;
         }
@@ -200,10 +214,16 @@ pub fn detect_flake_context(config: &Config) -> FlakeContext {
             (target_str.as_str(), "")
         };
 
-        let dir = if dir_part.is_empty() || dir_part == "." {
+        let is_remote_uri = dir_part.starts_with("github:")
+            || dir_part.starts_with("git+")
+            || dir_part.starts_with("http:")
+            || dir_part.starts_with("https:");
+        let dir = if is_remote_uri {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else if dir_part.is_empty() || dir_part == "." {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         } else {
-            PathBuf::from(dir_part)
+            expand_tilde(dir_part)
         };
 
         let is_git = is_git_repo(&dir);
@@ -221,9 +241,9 @@ pub fn detect_flake_context(config: &Config) -> FlakeContext {
     let dir = if let Ok(val) = std::env::var("FLAKER_DIR").or_else(|_| std::env::var("FLAKE_DIR"))
         && !val.trim().is_empty()
     {
-        PathBuf::from(val.trim())
+        expand_tilde(val.trim())
     } else if !config.general.flake_dir.trim().is_empty() {
-        PathBuf::from(config.general.flake_dir.trim())
+        expand_tilde(config.general.flake_dir.trim())
     } else {
         discover_flake_dir()
     };
@@ -245,6 +265,10 @@ pub fn make_cmd(program: &str, dir: &Path, needs_sudo: bool) -> Command {
     let mut cmd = if needs_sudo {
         let mut c = Command::new("sudo");
         c.arg(program);
+        if program == "git" {
+            // Prevent arbitrary code execution via untrusted repository hooks when running as root
+            c.args(["-c", "core.hooksPath=/dev/null"]);
+        }
         c
     } else {
         Command::new(program)
