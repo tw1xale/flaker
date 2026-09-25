@@ -23,6 +23,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Run Cargo Tests
+        run: cargo test --all-targets --verbose
+
+      - name: Run Cargo Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run Cargo Fmt Check
+        run: cargo fmt --check
+
       - name: Install Nix
         uses: cachix/install-nix-action@v27
         with:
@@ -31,12 +45,6 @@ jobs:
 
       - name: Run Nix Flake Check
         run: nix flake check
-
-      - name: Run Cargo Tests & Lints
-        run: |
-          nix develop --command cargo test --all-targets
-          nix develop --command cargo clippy --all-targets -- -D warnings
-          nix develop --command cargo fmt --check
 
       - name: Build Flaker package
         run: nix build --no-link

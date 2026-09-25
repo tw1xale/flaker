@@ -85,6 +85,8 @@
             clippy
             rustfmt
             pkg-config
+            git
+            nix
           ];
 
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
