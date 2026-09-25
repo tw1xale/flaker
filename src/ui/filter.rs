@@ -133,8 +133,11 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     // Commits list
     let list_area = left_chunks[1];
     let max_visible = list_area.height as usize;
-    let scroll_offset = if params.selected_index >= max_visible {
-        params.selected_index - max_visible + 1
+    let scroll_offset = if max_visible > 0 && params.selected_index >= max_visible {
+        params
+            .selected_index
+            .saturating_sub(max_visible)
+            .saturating_add(1)
     } else {
         0
     };

@@ -1,3 +1,31 @@
+/// RAII guard ensuring terminal raw mode and alternate screen are cleanly restored upon exit or panic.
+struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    fn new() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut out = stdout();
+        if let Err(err) = execute!(out, EnterAlternateScreen, Hide, EnableMouseCapture) {
+            let _ = disable_raw_mode();
+            return Err(err.into());
+        }
+        Ok(Self { active: true })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.active = false;
+            let mut out = stdout();
+            let _ = execute!(out, LeaveAlternateScreen, Show, DisableMouseCapture);
+            let _ = disable_raw_mode();
+        }
+    }
+}
+
 mod actions;
 mod app;
 mod config;
@@ -48,26 +76,18 @@ fn main() -> Result<()> {
         default_hook(info);
     }));
 
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, Hide, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
+    // Initialize application state before entering raw mode so startup warnings are visible
     let mut app = App::new();
+
+    // Setup terminal with RAII cleanup guard
+    let guard = TerminalGuard::new()?;
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = Terminal::new(backend)?;
 
     let res = run_app(&mut terminal, &mut app);
 
-    // Teardown terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        Show,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    // Restore terminal before reporting any application error to stderr
+    drop(guard);
 
     if let Err(err) = res {
         eprintln!("Application error: {err}");

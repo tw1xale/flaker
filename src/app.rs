@@ -1035,8 +1035,8 @@ impl App {
             ],
             affirmative_label: "Start Cleanup".to_string(),
             negative_label: "Cancel".to_string(),
-            selected_button: 0,
-            is_danger: false,
+            selected_button: 1,
+            is_danger: true,
             on_confirm: PendingAction::CleanStore,
             on_secondary: None,
             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Maintenance)),
@@ -1626,8 +1626,7 @@ impl App {
                 } else if self.config.keybindings.is_select(&key) {
                     if count == 0 {
                         (None, 0)
-                    } else {
-                        let (ref commit_str, _) = filtered[state.selected_index];
+                    } else if let Some((commit_str, _)) = filtered.get(state.selected_index) {
                         let hash = commit_str
                             .split([' ', '│'])
                             .next()
@@ -1642,11 +1641,14 @@ impl App {
                             )),
                             count,
                         )
+                    } else {
+                        (None, count)
                     }
                 } else {
                     state.input.handle_event(&Event::Key(key));
                     state.selected_index = 0;
-                    (None, count)
+                    let new_count = filter_commits(&state.commits, state.input.value()).len();
+                    (None, new_count)
                 }
             } else {
                 return;
@@ -1684,7 +1686,7 @@ impl App {
                     ],
                     affirmative_label: "Yes, Hard Reset".to_string(),
                     negative_label: "Cancel".to_string(),
-                    selected_button: 0,
+                    selected_button: 1,
                     is_danger: true,
                     on_confirm: PendingAction::HardResetExecute(selected_hash),
                     on_secondary: None,
@@ -1713,11 +1715,13 @@ impl App {
                         format!("Target commit: {selected_hash}"),
                         "Disk files remain untouched; commits after target will be squashed."
                             .to_string(),
+                        "WARNING: Changes will be force-pushed to the remote repository!"
+                            .to_string(),
                     ],
                     affirmative_label: "Trim History".to_string(),
                     negative_label: "Cancel".to_string(),
-                    selected_button: 0,
-                    is_danger: false,
+                    selected_button: 1,
+                    is_danger: true,
                     on_confirm: PendingAction::TrimHistorySoftReset(selected_hash),
                     on_secondary: None,
                     return_screen,
@@ -1843,8 +1847,9 @@ impl App {
                 } else if key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('p')
                 {
-                    if count > 0 {
-                        let (ref file_str, _) = filtered[state.selected_index];
+                    if count > 0
+                        && let Some((file_str, _)) = filtered.get(state.selected_index)
+                    {
                         let file_opt = if file_str.contains("All files in commit") {
                             None
                         } else {
@@ -1857,8 +1862,7 @@ impl App {
                 } else if self.config.keybindings.is_select(&key) {
                     if count == 0 {
                         (None, 0)
-                    } else {
-                        let (ref file_str, _) = filtered[state.selected_index];
+                    } else if let Some((file_str, _)) = filtered.get(state.selected_index) {
                         if file_str.contains("All files in commit") {
                             (Some((state.commit_hash.clone(), None, true)), count)
                         } else {
@@ -1867,11 +1871,14 @@ impl App {
                                 count,
                             )
                         }
+                    } else {
+                        (None, count)
                     }
                 } else {
                     state.input.handle_event(&Event::Key(key));
                     state.selected_index = 0;
-                    (None, count)
+                    let new_count = filter_commits(&state.files, state.input.value()).len();
+                    (None, new_count)
                 }
             } else {
                 return;
