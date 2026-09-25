@@ -538,8 +538,18 @@ quit = ["q", "Ctrl-c"]
 clear_input = ["Ctrl-u"]
 "##;
             if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-                let _ = std::fs::write(path, default_template);
+                if let Err(err) = std::fs::create_dir_all(parent) {
+                    eprintln!(
+                        "Warning: Failed to create configuration directory {}: {err}",
+                        parent.display()
+                    );
+                }
+                if let Err(err) = std::fs::write(path, default_template) {
+                    eprintln!(
+                        "Warning: Failed to write default configuration {}: {err}",
+                        path.display()
+                    );
+                }
             }
         }
     }
@@ -547,8 +557,18 @@ clear_input = ["Ctrl-u"]
     Config::default()
 }
 
-/// Returns the primary configuration path (~/.config/flaker/config.toml).
+/// Returns the primary configuration path (~/.config/flaker/config.toml), respecting XDG_CONFIG_HOME.
 pub fn get_config_path() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.trim().is_empty()
+    {
+        let xdg_dir = PathBuf::from(xdg.trim()).join("flaker");
+        let xdg_file = xdg_dir.join("config.toml");
+        if xdg_file.exists() {
+            return Some(xdg_file);
+        }
+    }
+
     if let Ok(home) = std::env::var("HOME") {
         let standard_dir = PathBuf::from(&home).join(".config").join("flaker");
         let standard_file = standard_dir.join("config.toml");
@@ -559,6 +579,17 @@ pub fn get_config_path() -> Option<PathBuf> {
         let alt_file = PathBuf::from(&home).join(".config").join("flaker.toml");
         if alt_file.exists() {
             return Some(alt_file);
+        }
+
+        let dot_file = PathBuf::from(&home).join(".flaker.toml");
+        if dot_file.exists() {
+            return Some(dot_file);
+        }
+
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+            && !xdg.trim().is_empty()
+        {
+            return Some(PathBuf::from(xdg.trim()).join("flaker").join("config.toml"));
         }
 
         return Some(standard_file);

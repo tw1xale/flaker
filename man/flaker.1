@@ -13,8 +13,18 @@ Print help information.
 .TP
 \fB\-V\fR, \fB\-\-version\fR
 Print version information.
+.SH ENVIRONMENT
+.TP
+\fBFLAKER_DIR\fR, \fBFLAKE_DIR\fR
+Override the directory containing the NixOS flake (supports tilde expansion \fI~/...\fR).
+.TP
+\fBFLAKER_TARGET\fR, \fBFLAKE_TARGET\fR
+Override the NixOS flake target string (e.g. \fI/etc/nixos#myhost\fR).
+.TP
+\fBXDG_CONFIG_HOME\fR
+Path to custom XDG configuration directory (defaults to \fI~/.config\fR).
 .SH CONFIGURATION
-Configuration is stored in \fI~/.config/flaker/config.toml\fR.
+Configuration is stored in \fI~/.config/flaker/config.toml\fR (or \fI$XDG_CONFIG_HOME/flaker/config.toml\fR).
 .SH AUTHORS
 Written by tw1xale <https://github.com/tw1xale/flaker>.
 .SH BUGS
