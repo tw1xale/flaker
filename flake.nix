@@ -22,7 +22,16 @@
         flakerPkg = pkgs.rustPlatform.buildRustPackage {
           pname = "flaker";
           version = "0.2.0";
-          src = self;
+          src = pkgs.lib.cleanSourceWith {
+            src = self;
+            filter = path: type:
+              let baseName = baseNameOf (toString path); in
+              !(pkgs.lib.hasPrefix "." baseName)
+              && baseName != "target"
+              && baseName != "assets"
+              && baseName != "dist"
+              && baseName != "result";
+          };
 
           cargoLock = {
             lockFile = ./Cargo.lock;
@@ -56,18 +65,20 @@
         };
 
         apps = {
-          default = flake-utils.lib.mkApp {
-            drv = flakerPkg;
-            name = "flaker";
+          default = {
+            type = "app";
+            program = "${flakerPkg}/bin/flaker";
+            meta = flakerPkg.meta;
           };
-          flaker = flake-utils.lib.mkApp {
-            drv = flakerPkg;
-            name = "flaker";
+          flaker = {
+            type = "app";
+            program = "${flakerPkg}/bin/flaker";
+            meta = flakerPkg.meta;
           };
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
+          packages = with pkgs; [
             cargo
             rustc
             rust-analyzer
@@ -78,5 +89,7 @@
 
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
+
+        formatter = pkgs.nixfmt;
       });
 }

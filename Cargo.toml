@@ -26,3 +26,7 @@ toml = "0.8"
 
 [profile.release]
 overflow-checks = true
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort" 

@@ -6,9 +6,16 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   check:
-    name: Check & Build
+    name: Check, Test & Build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -22,6 +29,12 @@ jobs:
 
       - name: Run Nix Flake Check
         run: nix flake check
+
+      - name: Run Cargo Tests & Lints
+        run: |
+          nix develop --command cargo test --all-targets
+          nix develop --command cargo clippy --all-targets -- -D warnings
+          nix develop --command cargo fmt --check
 
       - name: Build Flaker package
         run: nix build --no-link

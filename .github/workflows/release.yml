@@ -16,27 +16,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v27
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+          targets: x86_64-unknown-linux-musl
 
-      - name: Build Flaker
-        run: nix build
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Package Binary
+      - name: Build Standalone Musl Binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Package Binary & Checksums
         run: |
           mkdir -p dist
-          cp -L result/bin/flaker dist/flaker-x86_64-linux
+          cp target/x86_64-unknown-linux-musl/release/flaker dist/flaker-x86_64-linux
           chmod +x dist/flaker-x86_64-linux
-          tar -czf flaker-x86_64-linux.tar.gz -C dist flaker-x86_64-linux
+          tar -czf dist/flaker-x86_64-linux.tar.gz -C dist flaker-x86_64-linux
+          cd dist && sha256sum flaker-x86_64-linux flaker-x86_64-linux.tar.gz > SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            flaker-x86_64-linux.tar.gz
+            dist/flaker-x86_64-linux.tar.gz
             dist/flaker-x86_64-linux
-          body_path: RELEASE_NOTES.md
-          generate_release_notes: false
+            dist/SHA256SUMS
+          generate_release_notes: true
