@@ -874,7 +874,7 @@ fn execute_external_task(
             }
         },
 
-        ExternalTask::TrimHistoryCommitAndPush(msg, hash) => {
+        ExternalTask::TrimHistoryCommitAndPush(hash, msg) => {
             let r1 = git::git_reset_soft(&flake_dir, needs_sudo, &hash);
             let r2 = if r1.is_ok() {
                 git::git_commit(&flake_dir, needs_sudo, &msg)

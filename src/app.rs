@@ -2874,4 +2874,28 @@ mod tests {
             assert_eq!(state.filtered_indices[0], 0); // jq
         }
     }
+
+    #[test]
+    fn test_trim_history_flow() {
+        let mut app = App::new();
+        let target_hash = "abcdef12".to_string();
+        app.screen = Screen::InputModal(InputModalState {
+            action_name: format!("Trim commit history to {target_hash}"),
+            default_text: "default commit msg".to_string(),
+            input: Input::default(),
+            flow: InputFlow::TrimHistory(target_hash.clone()),
+            return_screen: Box::new(Screen::TopMenu),
+        });
+
+        for c in "minecraft server".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending_external_task,
+            ExternalTask::TrimHistoryCommitAndPush(ref h, ref m)
+                if h == &target_hash && m == "minecraft server"
+        ));
+    }
 }
