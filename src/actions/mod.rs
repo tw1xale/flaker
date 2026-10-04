@@ -41,11 +41,16 @@ pub struct FlakeContext {
 /// Extracts all `nixosConfigurations.<name>` identifiers from flake content.
 pub fn parse_flake_configs(content: &str) -> Vec<String> {
     let mut configs = Vec::new();
+    let mut in_configs_block = false;
+    let mut in_pending_brace = false;
+    let mut brace_depth: usize = 0;
+
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') || trimmed.starts_with("//") || trimmed.starts_with("/*") {
             continue;
         }
+
         if let Some(pos) = trimmed.find("nixosConfigurations.") {
             let rest = &trimmed[pos + "nixosConfigurations.".len()..];
             let name: String = if let Some(unquoted) = rest.strip_prefix('"') {
@@ -57,6 +62,51 @@ pub fn parse_flake_configs(content: &str) -> Vec<String> {
             };
             if !name.is_empty() && !configs.contains(&name) {
                 configs.push(name);
+            }
+        }
+
+        if !in_configs_block {
+            if trimmed.starts_with("nixosConfigurations")
+                && (trimmed.contains('=') || trimmed.contains('{'))
+                && !trimmed.starts_with("nixosConfigurations.")
+            {
+                let opens = trimmed.chars().filter(|&c| c == '{').count();
+                let closes = trimmed.chars().filter(|&c| c == '}').count();
+                if opens > 0 {
+                    in_configs_block = true;
+                    brace_depth = opens.saturating_sub(closes);
+                } else {
+                    in_pending_brace = true;
+                }
+            } else if in_pending_brace {
+                let opens = trimmed.chars().filter(|&c| c == '{').count();
+                let closes = trimmed.chars().filter(|&c| c == '}').count();
+                if opens > 0 {
+                    in_configs_block = true;
+                    in_pending_brace = false;
+                    brace_depth = opens.saturating_sub(closes);
+                }
+            }
+        } else {
+            let opens = trimmed.chars().filter(|&c| c == '{').count();
+            let closes = trimmed.chars().filter(|&c| c == '}').count();
+
+            if brace_depth == 1
+                && let Some((name_part, _)) = trimmed.split_once('=')
+            {
+                let clean = name_part.trim().trim_matches('"');
+                let valid_name: String = clean
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                if !valid_name.is_empty() && !configs.contains(&valid_name) {
+                    configs.push(valid_name);
+                }
+            }
+
+            brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+            if brace_depth == 0 {
+                in_configs_block = false;
             }
         }
     }
@@ -447,6 +497,20 @@ mod tests {
         "#;
         let configs = parse_flake_configs(flake);
         assert_eq!(configs, vec!["quoted-host", "normal-host"]);
+    }
+
+    #[test]
+    fn test_parse_flake_configs_block_syntax() {
+        let flake = r#"
+            outputs = { self, nixpkgs, ... }: {
+                nixosConfigurations = {
+                    workstation = nixpkgs.lib.nixosSystem { ... };
+                    "media-center" = nixpkgs.lib.nixosSystem { ... };
+                };
+            };
+        "#;
+        let configs = parse_flake_configs(flake);
+        assert_eq!(configs, vec!["workstation", "media-center"]);
     }
 
     #[test]

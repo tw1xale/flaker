@@ -7,13 +7,16 @@ use ratatui::{
 /// Parses the target path from a `diff --git a/path b/path` line.
 fn parse_diff_git_path(line: &str) -> String {
     if let Some(rest) = line.strip_prefix("diff --git ") {
-        if let Some((_a, b)) = rest.split_once(" b/") {
-            return b.to_string();
-        } else if let Some((a, _b)) = rest.split_once(" a/") {
-            return a.to_string();
-        } else {
-            return rest.to_string();
+        if let Some((_a, b)) = rest.split_once(r#"" "b/"#) {
+            return b.trim_end_matches('"').to_string();
         }
+        if let Some((_a, b)) = rest.split_once(" b/") {
+            return b.trim_matches('"').to_string();
+        }
+        if let Some((a, _b)) = rest.split_once(" a/") {
+            return a.trim_matches('"').to_string();
+        }
+        return rest.trim_matches('"').to_string();
     }
     line.to_string()
 }
@@ -428,6 +431,16 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_diff_git_path_quoted() {
+        assert_eq!(
+            parse_diff_git_path(
+                "diff --git \"a/minecraft server/server.properties\" \"b/minecraft server/server.properties\""
+            ),
+            "minecraft server/server.properties"
+        );
+    }
 
     #[test]
     fn test_parse_diff_git_path() {

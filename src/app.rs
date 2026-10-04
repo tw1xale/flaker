@@ -1709,6 +1709,16 @@ impl App {
                 });
             }
             FilterFlow::TrimHistory => {
+                if git::is_head_commit(&self.flake_dir, &selected_hash) {
+                    self.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "CANNOT TRIM TO HEAD".to_string(),
+                        message: "The selected commit is already the latest commit (HEAD).\nSelect an earlier commit to collapse subsequent commits into."
+                            .to_string(),
+                        return_screen,
+                    });
+                    return;
+                }
                 self.screen = Screen::Confirm(ConfirmState {
                     title: format!("{}  TRIM HISTORY (GIT RESET --SOFT)", theme::ICON_TRIM),
                     lines: vec![

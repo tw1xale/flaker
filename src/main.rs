@@ -877,6 +877,18 @@ fn execute_external_task(
         ExternalTask::TrimHistoryCommitAndPush(hash, msg) => {
             let r1 = git::git_reset_soft(&flake_dir, needs_sudo, &hash);
             let r2 = if r1.is_ok() {
+                let _ = git::git_add(&flake_dir, needs_sudo, ".");
+                if !git::has_staged_changes(&flake_dir).unwrap_or(false) {
+                    app.screen = Screen::Result(ResultState {
+                        is_success: true,
+                        title: "NO COMMITS TO TRIM".to_string(),
+                        message: format!(
+                            "Working tree is already identical to {hash}. No new commits were created."
+                        ),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
+                    });
+                    return Ok(());
+                }
                 git::git_commit(&flake_dir, needs_sudo, &msg)
             } else {
                 r1
