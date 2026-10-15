@@ -138,7 +138,7 @@ impl Theme {
         theme
     }
 
-    pub fn mocha() -> Self {
+    pub const fn mocha() -> Self {
         Self {
             border: cat_to_rat(PALETTE.mocha.colors.blue),
             header_title: cat_to_rat(PALETTE.mocha.colors.sky),
@@ -155,7 +155,7 @@ impl Theme {
         }
     }
 
-    pub fn macchiato() -> Self {
+    pub const fn macchiato() -> Self {
         Self {
             border: cat_to_rat(PALETTE.macchiato.colors.blue),
             header_title: cat_to_rat(PALETTE.macchiato.colors.sky),
@@ -172,7 +172,7 @@ impl Theme {
         }
     }
 
-    pub fn frappe() -> Self {
+    pub const fn frappe() -> Self {
         Self {
             border: cat_to_rat(PALETTE.frappe.colors.blue),
             header_title: cat_to_rat(PALETTE.frappe.colors.sky),
@@ -189,7 +189,7 @@ impl Theme {
         }
     }
 
-    pub fn latte() -> Self {
+    pub const fn latte() -> Self {
         Self {
             border: cat_to_rat(PALETTE.latte.colors.blue),
             header_title: cat_to_rat(PALETTE.latte.colors.sky),
@@ -206,7 +206,7 @@ impl Theme {
         }
     }
 
-    pub fn nord() -> Self {
+    pub const fn nord() -> Self {
         Self {
             border: Color::Rgb(136, 192, 208),         // #88C0D0 (Frost blue)
             header_title: Color::Rgb(143, 188, 187),   // #8FBCBB (Frost teal)
@@ -223,7 +223,7 @@ impl Theme {
         }
     }
 
-    pub fn tokyonight() -> Self {
+    pub const fn tokyonight() -> Self {
         Self {
             border: Color::Rgb(122, 162, 247),        // #7aa2f7 (Blue)
             header_title: Color::Rgb(125, 207, 255),  // #7dcfff (Cyan)
@@ -240,7 +240,7 @@ impl Theme {
         }
     }
 
-    pub fn dracula() -> Self {
+    pub const fn dracula() -> Self {
         Self {
             border: Color::Rgb(189, 147, 249),        // #bd93f9 (Purple)
             header_title: Color::Rgb(139, 233, 253),  // #8be9fd (Cyan)
@@ -257,7 +257,7 @@ impl Theme {
         }
     }
 
-    pub fn gruvbox() -> Self {
+    pub const fn gruvbox() -> Self {
         Self {
             border: Color::Rgb(131, 165, 152),        // #83a598 (Blue)
             header_title: Color::Rgb(142, 192, 124),  // #8ec07c (Aqua)

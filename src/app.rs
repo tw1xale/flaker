@@ -280,7 +280,7 @@ impl App {
         self.needs_sudo = ctx.needs_sudo;
     }
 
-    pub fn render(&mut self, frame: &mut Frame) {
+    pub fn render(&self, frame: &mut Frame) {
         let area = frame.area();
         frame.render_widget(Clear, area);
 
@@ -394,7 +394,9 @@ impl App {
                 };
 
                 let item_refs: Vec<&str> = items.iter().map(String::as_str).collect();
-                let menu_box_height = (items.len() as u16) + 2;
+                let menu_box_height = u16::try_from(items.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(2);
                 let total_height = menu_box_height + 2;
                 let centered = centered_rect(64, total_height, area);
 
@@ -571,7 +573,11 @@ impl App {
                     let mut should_update = false;
                     if let Screen::CommitFilter(ref mut state) = self.screen {
                         let is_wide = term_width >= 96;
-                        let split_x = term_width / 2;
+                        let max_popup_w = if is_wide { 136 } else { 76 };
+                        let popup_w = max_popup_w.min(term_width.saturating_sub(2));
+                        let popup_x = term_width.saturating_sub(popup_w) / 2;
+                        let inner_w = popup_w.saturating_sub(2);
+                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
                         if is_wide && mouse.column >= split_x {
                             state.preview_scroll = state.preview_scroll.saturating_sub(1);
                         } else if state.selected_index > 0 {
@@ -587,7 +593,11 @@ impl App {
                     let mut should_update = false;
                     if let Screen::FileFilter(ref mut state) = self.screen {
                         let is_wide = term_width >= 96;
-                        let split_x = term_width / 2;
+                        let max_popup_w = if is_wide { 136 } else { 76 };
+                        let popup_w = max_popup_w.min(term_width.saturating_sub(2));
+                        let popup_x = term_width.saturating_sub(popup_w) / 2;
+                        let inner_w = popup_w.saturating_sub(2);
+                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
                         if is_wide && mouse.column >= split_x {
                             state.preview_scroll = state.preview_scroll.saturating_sub(1);
                         } else if state.selected_index > 0 {
@@ -627,7 +637,11 @@ impl App {
                     let mut should_update = false;
                     if let Screen::CommitFilter(ref mut state) = self.screen {
                         let is_wide = term_width >= 96;
-                        let split_x = term_width / 2;
+                        let max_popup_w = if is_wide { 136 } else { 76 };
+                        let popup_w = max_popup_w.min(term_width.saturating_sub(2));
+                        let popup_x = term_width.saturating_sub(popup_w) / 2;
+                        let inner_w = popup_w.saturating_sub(2);
+                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
                         if is_wide && mouse.column >= split_x {
                             let total = state.preview_lines.len();
                             state.preview_scroll =
@@ -649,7 +663,11 @@ impl App {
                     let mut should_update = false;
                     if let Screen::FileFilter(ref mut state) = self.screen {
                         let is_wide = term_width >= 96;
-                        let split_x = term_width / 2;
+                        let max_popup_w = if is_wide { 136 } else { 76 };
+                        let popup_w = max_popup_w.min(term_width.saturating_sub(2));
+                        let popup_x = term_width.saturating_sub(popup_w) / 2;
+                        let inner_w = popup_w.saturating_sub(2);
+                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
                         if is_wide && mouse.column >= split_x {
                             let total = state.preview_lines.len();
                             state.preview_scroll =
@@ -703,7 +721,7 @@ impl App {
         }
     }
 
-    pub fn submenu_item_count(&self, kind: SubMenuKind) -> usize {
+    pub const fn submenu_item_count(&self, kind: SubMenuKind) -> usize {
         match kind {
             SubMenuKind::Updates => 6,
             SubMenuKind::SelectiveUpdate => 3,
@@ -935,7 +953,6 @@ impl App {
                 state.filtered_indices = (0..state.items.len()).collect();
                 state.scroll_offset = 0;
             } else {
-                crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
                 self.screen = *state.return_screen.clone();
             }
             return;
@@ -948,7 +965,6 @@ impl App {
                 state.scroll_offset = 0;
                 return;
             }
-            crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
             self.screen = *state.return_screen.clone();
             return;
         }
@@ -957,7 +973,6 @@ impl App {
             if let Some(task) = state.on_confirm_task.take() {
                 self.pending_external_task = *task;
             } else {
-                crate::actions::nix::clean_result_link(&self.flake_dir, self.needs_sudo);
                 self.screen = *state.return_screen.clone();
             }
             return;
@@ -1896,10 +1911,13 @@ impl App {
 
         if let Some((hash, file_opt, is_patch)) = action_to_take {
             let has_parent = git::has_parent_commit(&self.flake_dir, &hash);
+            let is_head = git::is_head_commit(&self.flake_dir, &hash);
             let is_rollback = if let Some(ref file) = file_opt {
-                git::is_file_identical_to_head(&self.flake_dir, &hash, file) && has_parent
+                is_head
+                    && git::is_file_identical_to_head(&self.flake_dir, &hash, file)
+                    && has_parent
             } else {
-                git::is_commit_identical_to_head(&self.flake_dir, &hash) && has_parent
+                is_head && git::is_commit_identical_to_head(&self.flake_dir, &hash) && has_parent
             };
             let target_ref = if is_rollback {
                 format!("{hash}~1")
@@ -2018,12 +2036,9 @@ pub fn filter_commits(commits: &[String], query: &str) -> Vec<(String, Vec<usize
         let mut matched_indices = Vec::new();
 
         for (c_idx, c) in commit.chars().enumerate() {
-            if q_idx < query_lower.len() {
-                let lower_chars: Vec<char> = c.to_lowercase().collect();
-                if lower_chars.contains(&query_lower[q_idx]) {
-                    matched_indices.push(c_idx);
-                    q_idx += 1;
-                }
+            if q_idx < query_lower.len() && c.to_lowercase().any(|lc| lc == query_lower[q_idx]) {
+                matched_indices.push(c_idx);
+                q_idx += 1;
             }
         }
 
@@ -2781,7 +2796,7 @@ mod tests {
         let task = ExternalTask::RebuildSwitchOnly;
 
         app.screen = Screen::ClosureDiff(ClosureDiffState {
-            items: items.clone(),
+            items,
             filtered_indices: vec![0],
             search_input: Input::default(),
             scroll_offset: 0,

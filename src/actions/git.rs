@@ -122,14 +122,16 @@ pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
             if force { force_flag } else { "" }
         );
 
-        let status = run_visible(title, desc.trim(), &mut cmd);
+        let status =
+            run_visible(title, desc.trim(), &mut cmd).context("Failed to execute git push")?;
 
-        if matches!(status, Ok(ref s) if s.success()) {
+        if status.success() {
             return Ok(());
         }
+        anyhow::bail!("git push origin {branch} failed with status: {status}");
     }
 
-    // Fallback without explicit remote/branch
+    // Fallback without explicit remote/branch (e.g. detached HEAD)
     let mut fallback_args = vec!["push"];
     if force {
         fallback_args.push(force_flag);
@@ -440,7 +442,9 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
 
     let is_identical = is_file_identical_to_head(dir, hash, file);
     let has_parent = has_parent_commit(dir, hash);
-    let target_ref = if is_identical && has_parent {
+    let is_head = is_head_commit(dir, hash);
+    let is_rollback = is_head && is_identical && has_parent;
+    let target_ref = if is_rollback {
         format!("{hash}~1")
     } else {
         hash.to_string()
@@ -457,22 +461,18 @@ pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<S
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if stdout.trim().is_empty() {
-        if is_identical {
-            if has_parent {
-                Ok(format!(
-                    "File '{file}' in commit {hash} has no differences compared to parent commit {target_ref}."
-                ))
-            } else {
-                Ok(format!(
-                    "File '{file}' is at the root commit (no parent commit exists for rollback)."
-                ))
-            }
-        } else {
+        if is_rollback {
+            Ok(format!(
+                "File '{file}' in commit {hash} has no differences compared to parent commit {target_ref}."
+            ))
+        } else if is_identical {
             Ok(format!(
                 "File '{file}' is identical between HEAD and commit {hash}."
             ))
+        } else {
+            Ok(format!("File '{file}' has no differences."))
         }
-    } else if is_identical && has_parent {
+    } else if is_rollback {
         Ok(format!(
             "§§hint:Rollback preview (reverting changes from {hash} to {target_ref}):\n{stdout}"
         ))

@@ -299,7 +299,9 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
             Span::styled(format!(" {rule}"), Style::default().fg(theme.border)),
         ])
     } else if let Some(file_info) = s.strip_prefix("§§file:") {
-        let rule = "─".repeat(45);
+        let file_len = unicode_width::UnicodeWidthStr::width(file_info);
+        let rule_len = 54_usize.saturating_sub(file_len + 6).max(8);
+        let rule = "─".repeat(rule_len);
         Line::from(vec![
             Span::styled("── ", Style::default().fg(theme.border)),
             Span::styled(
@@ -323,7 +325,9 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
         } else {
             format!("Line {line_num_str}: {heading}")
         };
-        let rule = "┄".repeat(45);
+        let title_len = unicode_width::UnicodeWidthStr::width(line_title.as_str());
+        let rule_len = 54_usize.saturating_sub(title_len + 6).max(6);
+        let rule = "┄".repeat(rule_len);
         Line::from(vec![
             Span::styled("   ┄ ", Style::default().fg(theme.faint_hint)),
             Span::styled(

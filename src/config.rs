@@ -155,7 +155,7 @@ pub struct KeybindingsConfig {
     pub clear_input: Vec<String>,
 }
 
-fn default_enable_quick_digits() -> bool {
+const fn default_enable_quick_digits() -> bool {
     true
 }
 
@@ -393,17 +393,12 @@ pub struct Config {
 pub fn matches_key(key: &KeyEvent, key_str: &str) -> bool {
     let s = key_str.trim();
 
-    if s.eq_ignore_ascii_case("ctrl-c") {
+    if let Some(rest) = s.to_lowercase().strip_prefix("ctrl-")
+        && let Some(target_char) = rest.chars().next()
+        && rest.chars().count() == 1
+    {
         return key.modifiers.contains(KeyModifiers::CONTROL)
-            && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'));
-    }
-    if s.eq_ignore_ascii_case("ctrl-u") {
-        return key.modifiers.contains(KeyModifiers::CONTROL)
-            && (key.code == KeyCode::Char('u') || key.code == KeyCode::Char('U'));
-    }
-    if s.eq_ignore_ascii_case("ctrl-d") {
-        return key.modifiers.contains(KeyModifiers::CONTROL)
-            && (key.code == KeyCode::Char('d') || key.code == KeyCode::Char('D'));
+            && matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&target_char));
     }
     if s.eq_ignore_ascii_case("enter") || s.eq_ignore_ascii_case("return") {
         return key.code == KeyCode::Enter;
@@ -594,6 +589,13 @@ pub fn get_config_path() -> Option<PathBuf> {
 
         return Some(standard_file);
     }
+
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.trim().is_empty()
+    {
+        return Some(PathBuf::from(xdg.trim()).join("flaker").join("config.toml"));
+    }
+
     None
 }
 
@@ -628,6 +630,11 @@ mod tests {
         assert!(matches_key(&ctrl_c, "Ctrl-c"));
         assert!(matches_key(&ctrl_c, "ctrl-c"));
         assert!(!matches_key(&ctrl_c, "c"));
+
+        let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(matches_key(&ctrl_p, "ctrl-p"));
+        assert!(matches_key(&ctrl_p, "Ctrl-P"));
+        assert!(!matches_key(&ctrl_p, "ctrl-c"));
     }
 
     #[test]

@@ -108,7 +108,10 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     .split(left_chunks[0])[1];
 
     let prefix_text = format!(" {} Search: ", theme::ICON_SEARCH);
-    let prefix_width = 1 + 1 + 9;
+    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix_text.as_str()) as u16;
+
+    let input_max_w = (search_area.width.saturating_sub(prefix_width + 3)) as usize;
+    let scroll = params.input.visual_scroll(input_max_w);
 
     let search_line = Line::from(vec![
         Span::styled(prefix_text, Style::default().fg(theme.border)),
@@ -118,7 +121,14 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
                 Style::default().fg(theme.faint_hint),
             )
         } else {
-            Span::styled(params.input.value(), Style::default().fg(theme.text))
+            let visible: String = params
+                .input
+                .value()
+                .chars()
+                .skip(scroll)
+                .take(input_max_w)
+                .collect();
+            Span::styled(visible, Style::default().fg(theme.text))
         },
     ]);
 
@@ -162,13 +172,18 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
 
                 let mut spans = vec![Span::raw(" ")];
 
-                let char_count = commit_str.chars().count();
-                let truncated = char_count > max_col_width;
-                let take_count = if truncated {
-                    max_col_width.saturating_sub(1)
-                } else {
-                    char_count
-                };
+                let mut current_width = 0;
+                let mut take_count = 0;
+                let limit = max_col_width.saturating_sub(1);
+                for ch in commit_str.chars() {
+                    let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if current_width + w > limit {
+                        break;
+                    }
+                    current_width += w;
+                    take_count += 1;
+                }
+                let truncated = take_count < commit_str.chars().count();
 
                 for (char_idx, ch) in commit_str.chars().take(take_count).enumerate() {
                     let is_match = matches.contains(&char_idx);
@@ -205,10 +220,11 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     let list = List::new(list_items);
     frame.render_widget(list, list_area);
 
-    // Set cursor on search query according to input.visual_cursor()
+    // Set cursor on search query according to input.visual_cursor() and scroll
     let start_x = search_area.x + 1 + prefix_width;
-    let cursor_x =
-        start_x.saturating_add(u16::try_from(params.input.visual_cursor()).unwrap_or(u16::MAX));
+    let cursor_offset =
+        u16::try_from(params.input.visual_cursor().saturating_sub(scroll)).unwrap_or(u16::MAX);
+    let cursor_x = start_x.saturating_add(cursor_offset);
     let cursor_y = search_area.y + 1;
     if cursor_x < search_area.x + search_area.width.saturating_sub(1) {
         frame.set_cursor_position((cursor_x, cursor_y));

@@ -290,8 +290,26 @@ pub fn find_rebuilt_system_packages(
             };
 
             if target_before != target_after {
-                let canon_before = fs::canonicalize(&path_before).unwrap_or(target_before);
-                let canon_after = fs::canonicalize(&path_after).unwrap_or(target_after);
+                let canon_before = fs::canonicalize(&path_before).unwrap_or_else(|_| {
+                    if target_before.is_relative() {
+                        path_before
+                            .parent()
+                            .unwrap_or(&dir_before)
+                            .join(&target_before)
+                    } else {
+                        target_before
+                    }
+                });
+                let canon_after = fs::canonicalize(&path_after).unwrap_or_else(|_| {
+                    if target_after.is_relative() {
+                        path_after
+                            .parent()
+                            .unwrap_or(&dir_after)
+                            .join(&target_after)
+                    } else {
+                        target_after
+                    }
+                });
 
                 if canon_before == canon_after {
                     continue;
@@ -319,8 +337,14 @@ pub fn find_rebuilt_system_packages(
                     let size_delta = match (fs::metadata(&canon_before), fs::metadata(&canon_after))
                     {
                         (Ok(m1), Ok(m2)) => {
-                            let diff = (m2.len() as i64) - (m1.len() as i64);
-                            format_size_delta(diff)
+                            let len1 = m1.len();
+                            let len2 = m2.len();
+                            let delta = if len2 >= len1 {
+                                i64::try_from(len2 - len1).unwrap_or(i64::MAX)
+                            } else {
+                                -i64::try_from(len1 - len2).unwrap_or(i64::MAX)
+                            };
+                            format_size_delta(delta)
                         }
                         _ => None,
                     };
@@ -512,8 +536,9 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
                 {
                     in_inputs_block = true;
                     brace_depth = 1;
-                    let opens = trimmed.chars().filter(|&c| c == '{').count();
-                    let closes = trimmed.chars().filter(|&c| c == '}').count();
+                    let clean = crate::actions::strip_nix_comments_and_strings(trimmed);
+                    let opens = clean.chars().filter(|&c| c == '{').count();
+                    let closes = clean.chars().filter(|&c| c == '}').count();
                     if opens > 1 {
                         brace_depth += opens - 1;
                     }
@@ -523,8 +548,9 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
                     }
                 }
             } else {
-                let opens = trimmed.chars().filter(|&c| c == '{').count();
-                let closes = trimmed.chars().filter(|&c| c == '}').count();
+                let clean = crate::actions::strip_nix_comments_and_strings(trimmed);
+                let opens = clean.chars().filter(|&c| c == '{').count();
+                let closes = clean.chars().filter(|&c| c == '}').count();
 
                 if brace_depth == 1 {
                     if let Some((name_part, _)) = trimmed.split_once('.') {

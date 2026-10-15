@@ -135,9 +135,12 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         format!("  ({filter_count} / {total_count} shown)")
     };
 
+    let prefix_text = format!(" {} Filter: ", theme::ICON_SEARCH);
+    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix_text.as_str()) as u16;
+
     let search_line = Line::from(vec![
         Span::styled(
-            " 🔍 Filter: ",
+            prefix_text,
             Style::default()
                 .fg(theme.selected)
                 .add_modifier(Modifier::BOLD),
@@ -160,6 +163,12 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     ]);
     let search_p = Paragraph::new(search_line);
     frame.render_widget(search_p, chunks[2]);
+
+    let cursor_x = chunks[2].x + prefix_width + (state.search_input.visual_cursor() as u16);
+    let cursor_y = chunks[2].y;
+    if cursor_x < chunks[2].right() {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 
     // Items list
     if state.filtered_indices.is_empty() {
@@ -396,7 +405,7 @@ mod tests {
                 is_identical_closure: false,
                 on_confirm_task: None,
                 return_screen: Box::new(crate::app::Screen::TopMenu),
-                title_suffix: "".to_string(),
+                title_suffix: String::new(),
             };
 
             terminal

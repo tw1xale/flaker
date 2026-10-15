@@ -83,18 +83,16 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     // Buttons
     let aff_style = if params.selected_button == 0 {
         Style::default()
-            .fg(theme.text)
-            .bg(border_color)
-            .add_modifier(Modifier::BOLD)
+            .fg(border_color)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else {
         Style::default().fg(theme.muted_text)
     };
 
     let neg_style = if params.selected_button == 1 {
         Style::default()
-            .fg(theme.text)
-            .bg(theme.border)
-            .add_modifier(Modifier::BOLD)
+            .fg(theme.selected)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else {
         Style::default().fg(theme.muted_text)
     };

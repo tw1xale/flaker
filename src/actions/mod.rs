@@ -38,6 +38,30 @@ pub struct FlakeContext {
     pub needs_sudo: bool,
 }
 
+/// Strips comments (# and //) and quoted strings (" ... ") to prevent brace tracking errors.
+pub fn strip_nix_comments_and_strings(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_string = false;
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            if c == '\\' {
+                let _ = chars.next();
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '#' || (c == '/' && chars.peek() == Some(&'/')) {
+            break;
+        } else if c == '"' {
+            in_string = true;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Extracts all `nixosConfigurations.<name>` identifiers from flake content.
 pub fn parse_flake_configs(content: &str) -> Vec<String> {
     let mut configs = Vec::new();
@@ -70,8 +94,9 @@ pub fn parse_flake_configs(content: &str) -> Vec<String> {
                 && (trimmed.contains('=') || trimmed.contains('{'))
                 && !trimmed.starts_with("nixosConfigurations.")
             {
-                let opens = trimmed.chars().filter(|&c| c == '{').count();
-                let closes = trimmed.chars().filter(|&c| c == '}').count();
+                let clean = strip_nix_comments_and_strings(trimmed);
+                let opens = clean.chars().filter(|&c| c == '{').count();
+                let closes = clean.chars().filter(|&c| c == '}').count();
                 if opens > 0 {
                     in_configs_block = true;
                     brace_depth = opens.saturating_sub(closes);
@@ -79,8 +104,9 @@ pub fn parse_flake_configs(content: &str) -> Vec<String> {
                     in_pending_brace = true;
                 }
             } else if in_pending_brace {
-                let opens = trimmed.chars().filter(|&c| c == '{').count();
-                let closes = trimmed.chars().filter(|&c| c == '}').count();
+                let clean = strip_nix_comments_and_strings(trimmed);
+                let opens = clean.chars().filter(|&c| c == '{').count();
+                let closes = clean.chars().filter(|&c| c == '}').count();
                 if opens > 0 {
                     in_configs_block = true;
                     in_pending_brace = false;
@@ -393,22 +419,33 @@ pub fn print_action_header_cli_with_theme(
         .map(|(w, _)| w as usize)
         .unwrap_or(80);
 
-    let content_len = title
-        .chars()
-        .count()
-        .max(command_desc.chars().count())
-        .max(58);
+    let title_w = unicode_width::UnicodeWidthStr::width(title);
+    let desc_w = unicode_width::UnicodeWidthStr::width(command_desc);
+    let content_len = title_w.max(desc_w).max(58);
     let inner_width = content_len.min(term_width.saturating_sub(4)).max(40);
 
     let border_line = "─".repeat(inner_width + 2);
 
     let format_line = |text: &str| -> String {
-        let char_count = text.chars().count();
-        if char_count > inner_width {
-            let truncated: String = text.chars().take(inner_width.saturating_sub(3)).collect();
-            format!("{truncated}...")
+        let text_w = unicode_width::UnicodeWidthStr::width(text);
+        if text_w > inner_width {
+            let mut acc = 0;
+            let mut truncated = String::new();
+            let target = inner_width.saturating_sub(3);
+            for ch in text.chars() {
+                let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if acc + cw > target {
+                    break;
+                }
+                truncated.push(ch);
+                acc += cw;
+            }
+            truncated.push_str("...");
+            let remaining = inner_width.saturating_sub(acc + 3);
+            format!("{truncated}{}", " ".repeat(remaining))
         } else {
-            format!("{text:<width$}", width = inner_width)
+            let padding = inner_width.saturating_sub(text_w);
+            format!("{text}{}", " ".repeat(padding))
         }
     };
 
@@ -442,6 +479,12 @@ pub fn run_visible(title: &str, command_desc: &str, cmd: &mut Command) -> Result
     let status = cmd
         .status()
         .context("Failed to wait for command execution")?;
+
+    if !status.success() {
+        eprintln!("\n\x1b[33mPress Enter to return to Flaker...\x1b[0m");
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_line(&mut buf);
+    }
 
     suspender.resume();
     Ok(status)

@@ -245,7 +245,7 @@ mod tests {
             mode: SelectiveMode::Exclude,
             inputs: vec![FlakeInput {
                 name: "nixpkgs".to_string(),
-                details: "".to_string(),
+                details: String::new(),
             }],
             selected: vec![false],
             cursor: 0,
@@ -269,7 +269,7 @@ mod tests {
             mode: SelectiveMode::Include,
             inputs: vec![FlakeInput {
                 name: "nixpkgs".to_string(),
-                details: "".to_string(),
+                details: String::new(),
             }],
             selected: vec![true],
             cursor: 0,

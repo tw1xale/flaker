@@ -563,13 +563,9 @@ fn execute_external_task(
                     };
 
                     app.generation = nix::get_system_generation();
-                    let action_desc = if is_git && has_staged {
-                        format!(
-                            "Working tree reverted to {hash}, committed, and system activated{push_warn}"
-                        )
-                    } else {
-                        format!("Working tree was already at {hash}, system activated")
-                    };
+                    let action_desc = format!(
+                        "Working tree reverted to {hash}, committed, and system activated{push_warn}"
+                    );
 
                     if !push_warn.is_empty() {
                         app.screen = Screen::Result(ResultState {
@@ -644,13 +640,9 @@ fn execute_external_task(
                     };
 
                     app.generation = nix::get_system_generation();
-                    let action_desc = if is_git && has_staged {
-                        format!(
-                            "Restored {file} from {hash}, committed, and system activated{push_warn}"
-                        )
-                    } else {
-                        format!("File {file} was already identical to {hash}, system activated")
-                    };
+                    let action_desc = format!(
+                        "Restored {file} from {hash}, committed, and system activated{push_warn}"
+                    );
 
                     if !push_warn.is_empty() {
                         app.screen = Screen::Result(ResultState {
