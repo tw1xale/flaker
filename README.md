@@ -177,16 +177,35 @@ flake_dir = ""
 flake_target = ""
 
 [theme]
-# Color palette. Available options:
+# Color palette. Available built-in options:
 # "mocha" (default), "macchiato", "frappe", "latte",
 # "nord", "tokyonight", "dracula", "gruvbox"
+# Or use any custom palette name, or a path to a theme file (e.g. "~/.config/flaker/themes/custom.toml")
 palette = "mocha"
 
-# Optional custom color overrides (HEX format):
+# Optional custom color overrides (HEX format like "#89b4fa" or color names like "cyan"):
 # border = "#89b4fa"
 # accent = "#cba6f7"
 # selected = "#f9e2af"
 # header_title = "#89dceb"
+
+# Define your own custom palettes directly in config.toml:
+# [palettes.cyberpunk]
+# base = "mocha"           # Optional base palette to inherit unset colors from
+# border = "#ff007f"
+# header_title = "#00f0ff"
+# secondary_info = "#7928ca"
+# muted_text = "#a0a0a0"
+# faint_hint = "#505050"
+# warning = "#f5a623"
+# danger = "#ff0055"
+# success = "#00ff66"
+# accent = "#b800ff"
+# selected = "#ffe600"
+# text = "#ffffff"
+# neutral_text = "#e0e0e0"
+
+# Alternatively, place standalone palette files in ~/.config/flaker/themes/<name>.toml
 
 [commit_templates]
 # Default commit messages for automatic actions

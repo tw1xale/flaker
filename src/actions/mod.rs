@@ -403,7 +403,7 @@ pub fn flush_stdin_events() {
 /// Prints a styled action header in terminal mode before command execution, using the configured palette.
 pub fn print_action_header_cli(title: &str, command_desc: &str) {
     let config = crate::config::load_config();
-    let theme = crate::theme::Theme::from_config(&config.theme);
+    let theme = crate::theme::Theme::from_config(&config);
     print_action_header_cli_with_theme(title, command_desc, &theme);
 }
 

@@ -1,13 +1,14 @@
 use catppuccin::PALETTE;
 use ratatui::style::Color;
+use std::path::{Path, PathBuf};
 
-use crate::config::ThemeConfig;
+use crate::config::{Config, PaletteConfig, ThemeConfig};
 
 const fn cat_to_rat(c: catppuccin::Color) -> Color {
     Color::Rgb(c.rgb.r, c.rgb.g, c.rgb.b)
 }
 
-/// Parses a hex color string like "#89b4fa" or "89b4fa" into ratatui Color::Rgb.
+/// Parses a hex color string like "#89b4fa", "89b4fa", or 3-digit "#fff" into ratatui Color::Rgb.
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
     let s = hex.trim().trim_start_matches('#');
     if s.len() == 6 && s.is_ascii() {
@@ -15,8 +16,35 @@ pub fn parse_hex_color(hex: &str) -> Option<Color> {
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;
         let b = u8::from_str_radix(&s[4..6], 16).ok()?;
         Some(Color::Rgb(r, g, b))
+    } else if s.len() == 3 && s.is_ascii() {
+        let r_val = u8::from_str_radix(&s[0..1], 16).ok()?;
+        let g_val = u8::from_str_radix(&s[1..2], 16).ok()?;
+        let b_val = u8::from_str_radix(&s[2..3], 16).ok()?;
+        Some(Color::Rgb(
+            r_val.saturating_mul(17),
+            g_val.saturating_mul(17),
+            b_val.saturating_mul(17),
+        ))
     } else {
         None
+    }
+}
+
+/// Parses either a hex color or a standard named color (e.g. "cyan", "red", "white", "#89b4fa").
+pub fn parse_color(val: &str) -> Option<Color> {
+    let s = val.trim();
+    match s.to_lowercase().as_str() {
+        "black" => Some(Color::Black),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "white" => Some(Color::White),
+        "gray" | "grey" => Some(Color::Gray),
+        "darkgray" | "darkgrey" | "dark_gray" | "dark_grey" => Some(Color::DarkGray),
+        _ => parse_hex_color(s),
     }
 }
 
@@ -60,82 +88,327 @@ impl Default for Theme {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum StandalonePaletteFile {
+    Wrapped { palette: PaletteConfig },
+    Direct(PaletteConfig),
+}
+
+impl StandalonePaletteFile {
+    fn into_palette_config(self) -> PaletteConfig {
+        match self {
+            Self::Wrapped { palette } => palette,
+            Self::Direct(palette) => palette,
+        }
+    }
+}
+
+/// Loads a custom palette from a standalone TOML file.
+pub fn load_palette_file(path: &Path) -> Option<PaletteConfig> {
+    if !path.is_file() {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    match toml::from_str::<StandalonePaletteFile>(&content) {
+        Ok(file) => Some(file.into_palette_config()),
+        Err(err) => {
+            eprintln!(
+                "⚠ Warning: Failed to parse palette file {}: {err}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Returns standard directories where theme files (.toml) are searched.
+pub fn get_theme_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.trim().is_empty()
+    {
+        let xdg_p = PathBuf::from(xdg.trim()).join("flaker");
+        dirs.push(xdg_p.join("themes"));
+        dirs.push(xdg_p.join("palettes"));
+    }
+
+    if let Ok(home) = std::env::var("HOME")
+        && !home.trim().is_empty()
+    {
+        let home_p = PathBuf::from(home.trim());
+        dirs.push(home_p.join(".config").join("flaker").join("themes"));
+        dirs.push(home_p.join(".config").join("flaker").join("palettes"));
+        dirs.push(home_p.join(".flaker").join("themes"));
+        dirs.push(home_p.join(".flaker").join("palettes"));
+    }
+
+    dirs
+}
+
+/// Finds a theme file either by direct path or by searching standard theme directories.
+pub fn find_theme_file(name: &str) -> Option<PathBuf> {
+    let clean = name.trim();
+    if clean.is_empty() {
+        return None;
+    }
+
+    if clean.contains('/')
+        || clean.contains('\\')
+        || clean.starts_with('~')
+        || clean.ends_with(".toml")
+    {
+        let path = crate::actions::expand_tilde(clean);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let file_names = [
+        format!("{clean}.toml"),
+        format!("{}.toml", clean.to_lowercase()),
+    ];
+
+    for dir in get_theme_search_dirs() {
+        for fn_name in &file_names {
+            let candidate = dir.join(fn_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// Looks up a custom palette in memory from `config.palettes` or `config.theme.palettes` (case-insensitive).
+pub fn find_palette_in_config(name: &str, config: &Config) -> Option<PaletteConfig> {
+    for (k, v) in &config.palettes {
+        if k.eq_ignore_ascii_case(name) {
+            return Some(v.clone());
+        }
+    }
+    for (k, v) in &config.theme.palettes {
+        if k.eq_ignore_ascii_case(name) {
+            return Some(v.clone());
+        }
+    }
+    None
+}
+
 impl Theme {
-    pub fn from_config(config: &ThemeConfig) -> Self {
-        let mut theme = match config.palette.to_lowercase().trim() {
-            "macchiato" => Self::macchiato(),
-            "frappe" | "frappé" => Self::frappe(),
-            "latte" => Self::latte(),
-            "nord" => Self::nord(),
-            "tokyonight" | "tokyo-night" => Self::tokyonight(),
-            "dracula" => Self::dracula(),
-            "gruvbox" => Self::gruvbox(),
-            _ => Self::mocha(),
-        };
-
-        // Apply any explicit custom color overrides
-        if let Some(ref hex) = config.border
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.border = c;
-        }
-        if let Some(ref hex) = config.header_title
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.header_title = c;
-        }
-        if let Some(ref hex) = config.secondary_info
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.secondary_info = c;
-        }
-        if let Some(ref hex) = config.muted_text
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.muted_text = c;
-        }
-        if let Some(ref hex) = config.faint_hint
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.faint_hint = c;
-        }
-        if let Some(ref hex) = config.warning
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.warning = c;
-        }
-        if let Some(ref hex) = config.danger
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.danger = c;
-        }
-        if let Some(ref hex) = config.success
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.success = c;
-        }
-        if let Some(ref hex) = config.accent
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.accent = c;
-        }
-        if let Some(ref hex) = config.selected
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.selected = c;
-        }
-        if let Some(ref hex) = config.text
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.text = c;
-        }
-        if let Some(ref hex) = config.neutral_text
-            && let Some(c) = parse_hex_color(hex)
-        {
-            theme.neutral_text = c;
-        }
-
+    /// Resolves a theme from application configuration.
+    ///
+    /// Resolution order:
+    /// 1. Custom palette defined in `[palettes.<name>]` or `[theme.palettes.<name>]`
+    /// 2. Standalone palette file in `~/.config/flaker/themes/<name>.toml` or explicit file path
+    /// 3. Built-in palettes: "mocha", "macchiato", "frappe", "latte", "nord", "tokyonight", "dracula", "gruvbox"
+    /// 4. Fallback to "mocha" with a warning if the named palette is unknown.
+    ///
+    /// Finally, any individual color overrides from `[theme]` are applied on top.
+    pub fn from_config(config: &Config) -> Self {
+        let palette_name = config.theme.palette.trim();
+        let mut theme = Self::resolve_palette(palette_name, config, 0);
+        theme.apply_theme_config(&config.theme);
         theme
+    }
+
+    /// Resolves a theme from `ThemeConfig`.
+    pub fn from_theme_config(config: &ThemeConfig) -> Self {
+        let default_config = Config {
+            theme: config.clone(),
+            ..Default::default()
+        };
+        Self::from_config(&default_config)
+    }
+
+    fn resolve_palette(name: &str, config: &Config, depth: usize) -> Self {
+        let clean = name.trim();
+        if depth > 5 {
+            return Self::mocha();
+        }
+
+        // 1. In-memory custom palette
+        if let Some(custom) = find_palette_in_config(clean, config) {
+            let mut base_theme = if let Some(ref base_name) = custom.base {
+                Self::resolve_palette(base_name, config, depth + 1)
+            } else {
+                Self::mocha()
+            };
+            base_theme.apply_palette_config(&custom);
+            return base_theme;
+        }
+
+        // 2. Standalone theme file
+        if let Some(file_path) = find_theme_file(clean)
+            && let Some(file_palette) = load_palette_file(&file_path)
+        {
+            let mut base_theme = if let Some(ref base_name) = file_palette.base {
+                Self::resolve_palette(base_name, config, depth + 1)
+            } else {
+                Self::mocha()
+            };
+            base_theme.apply_palette_config(&file_palette);
+            return base_theme;
+        }
+
+        // 3. Built-in palettes
+        if let Some(builtin) = Self::builtin(clean) {
+            return builtin;
+        }
+
+        // 4. Fallback
+        if !clean.is_empty()
+            && !clean.eq_ignore_ascii_case("mocha")
+            && !clean.eq_ignore_ascii_case("default")
+        {
+            eprintln!("⚠ Warning: Palette '{clean}' not found. Using default 'mocha'.");
+        }
+        Self::mocha()
+    }
+
+    /// Returns a built-in theme by name, or None if unknown.
+    pub fn builtin(name: &str) -> Option<Self> {
+        match name.to_lowercase().trim() {
+            "mocha" => Some(Self::mocha()),
+            "macchiato" => Some(Self::macchiato()),
+            "frappe" | "frappé" => Some(Self::frappe()),
+            "latte" => Some(Self::latte()),
+            "nord" => Some(Self::nord()),
+            "tokyonight" | "tokyo-night" => Some(Self::tokyonight()),
+            "dracula" => Some(Self::dracula()),
+            "gruvbox" => Some(Self::gruvbox()),
+            _ => None,
+        }
+    }
+
+    /// Applies individual color overrides from a PaletteConfig.
+    pub fn apply_palette_config(&mut self, cfg: &PaletteConfig) {
+        if let Some(ref val) = cfg.border
+            && let Some(c) = parse_color(val)
+        {
+            self.border = c;
+        }
+        if let Some(ref val) = cfg.header_title
+            && let Some(c) = parse_color(val)
+        {
+            self.header_title = c;
+        }
+        if let Some(ref val) = cfg.secondary_info
+            && let Some(c) = parse_color(val)
+        {
+            self.secondary_info = c;
+        }
+        if let Some(ref val) = cfg.muted_text
+            && let Some(c) = parse_color(val)
+        {
+            self.muted_text = c;
+        }
+        if let Some(ref val) = cfg.faint_hint
+            && let Some(c) = parse_color(val)
+        {
+            self.faint_hint = c;
+        }
+        if let Some(ref val) = cfg.warning
+            && let Some(c) = parse_color(val)
+        {
+            self.warning = c;
+        }
+        if let Some(ref val) = cfg.danger
+            && let Some(c) = parse_color(val)
+        {
+            self.danger = c;
+        }
+        if let Some(ref val) = cfg.success
+            && let Some(c) = parse_color(val)
+        {
+            self.success = c;
+        }
+        if let Some(ref val) = cfg.accent
+            && let Some(c) = parse_color(val)
+        {
+            self.accent = c;
+        }
+        if let Some(ref val) = cfg.selected
+            && let Some(c) = parse_color(val)
+        {
+            self.selected = c;
+        }
+        if let Some(ref val) = cfg.text
+            && let Some(c) = parse_color(val)
+        {
+            self.text = c;
+        }
+        if let Some(ref val) = cfg.neutral_text
+            && let Some(c) = parse_color(val)
+        {
+            self.neutral_text = c;
+        }
+    }
+
+    /// Applies individual color overrides from a ThemeConfig.
+    pub fn apply_theme_config(&mut self, cfg: &ThemeConfig) {
+        if let Some(ref val) = cfg.border
+            && let Some(c) = parse_color(val)
+        {
+            self.border = c;
+        }
+        if let Some(ref val) = cfg.header_title
+            && let Some(c) = parse_color(val)
+        {
+            self.header_title = c;
+        }
+        if let Some(ref val) = cfg.secondary_info
+            && let Some(c) = parse_color(val)
+        {
+            self.secondary_info = c;
+        }
+        if let Some(ref val) = cfg.muted_text
+            && let Some(c) = parse_color(val)
+        {
+            self.muted_text = c;
+        }
+        if let Some(ref val) = cfg.faint_hint
+            && let Some(c) = parse_color(val)
+        {
+            self.faint_hint = c;
+        }
+        if let Some(ref val) = cfg.warning
+            && let Some(c) = parse_color(val)
+        {
+            self.warning = c;
+        }
+        if let Some(ref val) = cfg.danger
+            && let Some(c) = parse_color(val)
+        {
+            self.danger = c;
+        }
+        if let Some(ref val) = cfg.success
+            && let Some(c) = parse_color(val)
+        {
+            self.success = c;
+        }
+        if let Some(ref val) = cfg.accent
+            && let Some(c) = parse_color(val)
+        {
+            self.accent = c;
+        }
+        if let Some(ref val) = cfg.selected
+            && let Some(c) = parse_color(val)
+        {
+            self.selected = c;
+        }
+        if let Some(ref val) = cfg.text
+            && let Some(c) = parse_color(val)
+        {
+            self.text = c;
+        }
+        if let Some(ref val) = cfg.neutral_text
+            && let Some(c) = parse_color(val)
+        {
+            self.neutral_text = c;
+        }
     }
 
     pub const fn mocha() -> Self {
@@ -275,6 +548,18 @@ impl Theme {
     }
 }
 
+impl From<&Config> for Theme {
+    fn from(config: &Config) -> Self {
+        Self::from_config(config)
+    }
+}
+
+impl From<&ThemeConfig> for Theme {
+    fn from(config: &ThemeConfig) -> Self {
+        Self::from_theme_config(config)
+    }
+}
+
 // ==========================================
 // Nerd Font Icons (Single Unicode codepoints)
 // ==========================================
@@ -316,9 +601,22 @@ mod tests {
             parse_hex_color("cba6f7"),
             Some(Color::Rgb(0xcb, 0xa6, 0xf7))
         );
+        assert_eq!(parse_hex_color("#fff"), Some(Color::Rgb(255, 255, 255)));
+        assert_eq!(parse_hex_color("#000"), Some(Color::Rgb(0, 0, 0)));
+        assert_eq!(parse_hex_color("8cd"), Some(Color::Rgb(136, 204, 221)));
         assert_eq!(parse_hex_color("invalid"), None);
         assert_eq!(parse_hex_color("你好"), None);
         assert_eq!(parse_hex_color("краска"), None);
+    }
+
+    #[test]
+    fn test_parse_color_named() {
+        assert_eq!(parse_color("cyan"), Some(Color::Cyan));
+        assert_eq!(parse_color("Red"), Some(Color::Red));
+        assert_eq!(parse_color("WHITE"), Some(Color::White));
+        assert_eq!(parse_color("#89b4fa"), Some(Color::Rgb(0x89, 0xb4, 0xfa)));
+        assert_eq!(parse_color("#fff"), Some(Color::Rgb(255, 255, 255)));
+        assert_eq!(parse_color("unknown_color"), None);
     }
 
     #[test]
@@ -327,8 +625,177 @@ mod tests {
             palette: "nord".to_string(),
             ..Default::default()
         };
-        let t = Theme::from_config(&cfg);
+        let t = Theme::from_theme_config(&cfg);
         assert_eq!(t.border, Color::Rgb(136, 192, 208));
+    }
+
+    #[test]
+    fn test_custom_palette_in_config() {
+        let mut palettes = std::collections::BTreeMap::new();
+        palettes.insert(
+            "cyberpunk".to_string(),
+            PaletteConfig {
+                border: Some("#ff007f".to_string()),
+                header_title: Some("cyan".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let config = Config {
+            theme: ThemeConfig {
+                palette: "CyberPunk".to_string(), // test case-insensitive matching
+                ..Default::default()
+            },
+            palettes,
+            ..Default::default()
+        };
+
+        let t = Theme::from_config(&config);
+        assert_eq!(t.border, Color::Rgb(0xff, 0x00, 0x7f));
+        assert_eq!(t.header_title, Color::Cyan);
+    }
+
+    #[test]
+    fn test_custom_palette_with_base_inheritance() {
+        let mut palettes = std::collections::BTreeMap::new();
+        palettes.insert(
+            "my-nord".to_string(),
+            PaletteConfig {
+                base: Some("nord".to_string()),
+                accent: Some("#ff00ff".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let config = Config {
+            theme: ThemeConfig {
+                palette: "my-nord".to_string(),
+                ..Default::default()
+            },
+            palettes,
+            ..Default::default()
+        };
+
+        let t = Theme::from_config(&config);
+        // Border inherits from Nord
+        assert_eq!(t.border, Color::Rgb(136, 192, 208));
+        // Accent is overridden
+        assert_eq!(t.accent, Color::Rgb(0xff, 0x00, 0xff));
+    }
+
+    #[test]
+    fn test_theme_override_precedence() {
+        let mut palettes = std::collections::BTreeMap::new();
+        palettes.insert(
+            "custom".to_string(),
+            PaletteConfig {
+                border: Some("#111111".to_string()),
+                accent: Some("#222222".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let config = Config {
+            theme: ThemeConfig {
+                palette: "custom".to_string(),
+                border: Some("#ffffff".to_string()), // overrides custom palette
+                ..Default::default()
+            },
+            palettes,
+            ..Default::default()
+        };
+
+        let t = Theme::from_config(&config);
+        assert_eq!(t.border, Color::Rgb(0xff, 0xff, 0xff));
+        assert_eq!(t.accent, Color::Rgb(0x22, 0x22, 0x22));
+    }
+
+    #[test]
+    fn test_standalone_palette_files() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("flaker_test_palettes_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // 1. Direct flat format
+        let flat_file = temp_dir.join("matrix.toml");
+        std::fs::write(
+            &flat_file,
+            r##"
+base = "mocha"
+border = "#00ff00"
+header_title = "green"
+"##,
+        )
+        .unwrap();
+
+        let loaded_flat = load_palette_file(&flat_file).expect("Failed to load flat palette");
+        assert_eq!(loaded_flat.border.as_deref(), Some("#00ff00"));
+        assert_eq!(loaded_flat.header_title.as_deref(), Some("green"));
+
+        // 2. Wrapped [palette] format
+        let wrapped_file = temp_dir.join("wrapped.toml");
+        std::fs::write(
+            &wrapped_file,
+            r##"
+[palette]
+base = "nord"
+border = "#ff0000"
+"##,
+        )
+        .unwrap();
+
+        let loaded_wrapped =
+            load_palette_file(&wrapped_file).expect("Failed to load wrapped palette");
+        assert_eq!(loaded_wrapped.border.as_deref(), Some("#ff0000"));
+        assert_eq!(loaded_wrapped.base.as_deref(), Some("nord"));
+
+        // Test direct file path in config.palette
+        let config = Config {
+            theme: ThemeConfig {
+                palette: flat_file.to_string_lossy().to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let t = Theme::from_config(&config);
+        assert_eq!(t.border, Color::Rgb(0, 255, 0));
+        assert_eq!(t.header_title, Color::Green);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_circular_palette_reference_terminates() {
+        let mut palettes = std::collections::BTreeMap::new();
+        palettes.insert(
+            "loop_a".to_string(),
+            PaletteConfig {
+                base: Some("loop_b".to_string()),
+                ..Default::default()
+            },
+        );
+        palettes.insert(
+            "loop_b".to_string(),
+            PaletteConfig {
+                base: Some("loop_a".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let config = Config {
+            theme: ThemeConfig {
+                palette: "loop_a".to_string(),
+                ..Default::default()
+            },
+            palettes,
+            ..Default::default()
+        };
+
+        // Must not hang or stack overflow
+        let t = Theme::from_config(&config);
+        // Falls back to mocha
+        assert_eq!(t.border, Theme::mocha().border);
     }
 
     #[test]

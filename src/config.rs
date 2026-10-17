@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// General configuration for Flaker (explicit flake directories and targets).
@@ -12,11 +13,37 @@ pub struct GeneralConfig {
     pub flake_target: String,
 }
 
+/// Custom color palette definition for user-defined themes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaletteConfig {
+    /// Optional base palette to inherit unset colors from (e.g. "mocha", "nord", "tokyonight").
+    /// Defaults to "mocha" if unspecified.
+    #[serde(default)]
+    pub base: Option<String>,
+
+    pub border: Option<String>,
+    pub header_title: Option<String>,
+    pub secondary_info: Option<String>,
+    pub muted_text: Option<String>,
+    pub faint_hint: Option<String>,
+    pub warning: Option<String>,
+    pub danger: Option<String>,
+    pub success: Option<String>,
+    pub accent: Option<String>,
+    pub selected: Option<String>,
+    pub text: Option<String>,
+    pub neutral_text: Option<String>,
+}
+
 /// Theme and color configuration for Flaker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeConfig {
     #[serde(default = "default_palette")]
     pub palette: String,
+
+    /// Named custom palettes defined directly under [theme.palettes.<name>].
+    #[serde(default)]
+    pub palettes: BTreeMap<String, PaletteConfig>,
 
     pub border: Option<String>,
     pub header_title: Option<String>,
@@ -40,6 +67,7 @@ impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
             palette: default_palette(),
+            palettes: BTreeMap::new(),
             border: None,
             header_title: None,
             secondary_info: None,
@@ -382,6 +410,10 @@ pub struct Config {
     #[serde(default)]
     pub theme: ThemeConfig,
 
+    /// Named custom palettes defined at the root table [palettes.<name>].
+    #[serde(default)]
+    pub palettes: BTreeMap<String, PaletteConfig>,
+
     #[serde(default)]
     pub commit_templates: CommitTemplatesConfig,
 
@@ -491,16 +523,33 @@ flake_dir = ""
 flake_target = ""
 
 [theme]
-# Color palette. Available options:
+# Color palette. Available built-in options:
 # "mocha" (default), "macchiato", "frappe", "latte",
 # "nord", "tokyonight", "dracula", "gruvbox"
+# Or use any custom palette defined under [palettes.<name>] or in ~/.config/flaker/themes/<name>.toml
 palette = "mocha"
 
-# Optional custom color overrides (HEX format like "#89b4fa"):
+# Optional custom color overrides (HEX format or named colors):
 # border = "#89b4fa"
 # accent = "#cba6f7"
 # selected = "#f9e2af"
 # header_title = "#89dceb"
+
+# Define your own custom palettes directly in this file:
+# [palettes.cyberpunk]
+# base = "mocha"           # Optional base palette to inherit unset colors from
+# border = "#ff007f"
+# header_title = "#00f0ff"
+# secondary_info = "#7928ca"
+# muted_text = "#a0a0a0"
+# faint_hint = "#505050"
+# warning = "#f5a623"
+# danger = "#ff0055"
+# success = "#00ff66"
+# accent = "#b800ff"
+# selected = "#ffe600"
+# text = "#ffffff"
+# neutral_text = "#e0e0e0"
 
 [commit_templates]
 # Default commit messages for actions
@@ -717,6 +766,36 @@ mod tests {
         assert_eq!(
             kb.filter_hint(),
             "Type to filter  •  [↑/↓] Commits  •  [PgUp/PgDn] Diff  •  [Space] Select  •  [Esc] Cancel"
+        );
+    }
+    #[test]
+    fn test_custom_palettes_toml_parsing() {
+        let toml_str = r##"
+            [theme]
+            palette = "custom_cyber"
+
+            [palettes.custom_cyber]
+            base = "nord"
+            border = "#ff007f"
+            header_title = "cyan"
+            warning = "#fabd2f"
+
+            [theme.palettes.another_theme]
+            border = "#123456"
+        "##;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.theme.palette, "custom_cyber");
+        assert!(cfg.palettes.contains_key("custom_cyber"));
+        let cyber = &cfg.palettes["custom_cyber"];
+        assert_eq!(cyber.base.as_deref(), Some("nord"));
+        assert_eq!(cyber.border.as_deref(), Some("#ff007f"));
+        assert_eq!(cyber.header_title.as_deref(), Some("cyan"));
+        assert_eq!(cyber.warning.as_deref(), Some("#fabd2f"));
+
+        assert!(cfg.theme.palettes.contains_key("another_theme"));
+        assert_eq!(
+            cfg.theme.palettes["another_theme"].border.as_deref(),
+            Some("#123456")
         );
     }
 }

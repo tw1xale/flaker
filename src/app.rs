@@ -250,7 +250,7 @@ impl App {
         let user = whoami::fallible::username().unwrap_or_else(|_| "user".to_string());
         let generation = nix::get_system_generation();
         let config = load_config();
-        let theme = Theme::from_config(&config.theme);
+        let theme = Theme::from_config(&config);
         let ctx = detect_flake_context(&config);
 
         Self {
