@@ -597,8 +597,14 @@ fn execute_external_task(
         }
 
         ExternalTask::RestoreCommitAndSwitch(hash, file, msg) => {
+            let paths = if file.contains("all files") {
+                git::changed_paths(&flake_dir).unwrap_or_default()
+            } else {
+                vec![file.clone()]
+            };
+
             let has_changes = if is_git {
-                git::has_uncommitted_changes(&flake_dir).unwrap_or(false)
+                !paths.is_empty() && git::has_uncommitted_changes(&flake_dir).unwrap_or(false)
             } else {
                 false
             };
@@ -614,13 +620,12 @@ fn execute_external_task(
             }
 
             let has_staged = if is_git {
-                git::git_add(&flake_dir, needs_sudo, ".").is_ok()
-                    && git::has_staged_changes(&flake_dir).unwrap_or(false)
+                git::git_commit_paths(&flake_dir, needs_sudo, &msg, &paths).is_ok()
             } else {
                 false
             };
 
-            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
+            if is_git && !has_staged {
                 app.screen = Screen::Result(ResultState {
                     is_success: false,
                     title: "GIT COMMIT FAILED".to_string(),
@@ -867,31 +872,14 @@ fn execute_external_task(
         },
 
         ExternalTask::TrimHistoryCommitAndPush(hash, msg) => {
-            let r1 = git::git_reset_soft(&flake_dir, needs_sudo, &hash);
+            let r1 = git::trim_history(&flake_dir, needs_sudo, &hash, &msg);
             let r2 = if r1.is_ok() {
-                let _ = git::git_add(&flake_dir, needs_sudo, ".");
-                if !git::has_staged_changes(&flake_dir).unwrap_or(false) {
-                    app.screen = Screen::Result(ResultState {
-                        is_success: true,
-                        title: "NO COMMITS TO TRIM".to_string(),
-                        message: format!(
-                            "Working tree is already identical to {hash}. No new commits were created."
-                        ),
-                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                    });
-                    return Ok(());
-                }
-                git::git_commit(&flake_dir, needs_sudo, &msg)
+                git::git_push(&flake_dir, needs_sudo, true)
             } else {
                 r1
             };
-            let r3 = if r2.is_ok() {
-                git::git_push(&flake_dir, needs_sudo, true)
-            } else {
-                r2
-            };
 
-            match r3 {
+            match r2 {
                 Err(err) => {
                     app.screen = Screen::Result(ResultState {
                         is_success: false,
@@ -1023,4 +1011,153 @@ fn execute_external_task(
     app.refresh_metadata();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod codex_audit {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        let root = std::env::temp_dir()
+            .join(format!("flaker_fixture_{}", std::process::id()))
+            .join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn git_status_failure_must_not_mean_clean_tree() {
+        let dir = fixture("invalid-git-status");
+        std::fs::write(dir.join(".git"), "gitdir: missing-git-dir\n").unwrap();
+        let result = git::has_uncommitted_changes(&dir);
+        assert!(result.is_err(), "expected Git error, received {result:?}");
+    }
+
+    #[test]
+    fn git_diff_failure_must_not_mean_staged_changes() {
+        let dir = fixture("invalid-git-diff");
+        std::fs::write(dir.join(".git"), "gitdir: missing-git-dir\n").unwrap();
+        let result = git::has_staged_changes(&dir);
+        assert!(result.is_err(), "expected Git error, received {result:?}");
+    }
+
+    #[test]
+    fn failed_closure_comparison_must_propagate() {
+        let temp_dir = std::env::temp_dir().join(format!("flaker_audit_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let before = temp_dir.join("non-store-before");
+        let after = temp_dir.join("non-store-after");
+        let _ = std::fs::create_dir_all(&before);
+        let _ = std::fs::create_dir_all(&after);
+        assert!(nix::diff_closures(&before, &after).is_err());
+        let result = nix::get_closure_diff_between(&before, &after);
+        assert!(
+            result.is_err(),
+            "expected comparison error, received {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn lockfile_root_identifier_must_be_respected() {
+        let dir = fixture("renamed-lock-root");
+        std::fs::write(
+            dir.join("flake.lock"),
+            r#"{"version":7,"root":"project","nodes":{"project":{"inputs":{"nixpkgs":"nixpkgs"}},"nixpkgs":{"locked":{"type":"github","owner":"NixOS","repo":"nixpkgs","rev":"abcdef"}}}}"#,
+        )
+        .unwrap();
+        let result = nix::get_flake_inputs(&dir);
+        assert!(
+            result.is_ok(),
+            "valid renamed root was rejected: {result:?}"
+        );
+        assert_eq!(result.unwrap().first().unwrap().name, "nixpkgs");
+    }
+
+    #[test]
+    fn braces_in_nix_strings_must_not_end_configuration_block() {
+        let configs = actions::parse_flake_configs(
+            r#"{
+  nixosConfigurations = {
+    first = build { message = "}"; };
+    second = build {};
+  };
+}"#,
+        );
+        assert_eq!(configs, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn tilde_target_must_be_expanded_before_command_execution() {
+        let mut config = config::Config::default();
+        config.general.flake_target = "~/dotfiles#host".to_string();
+        let context = actions::detect_flake_context(&config).unwrap();
+        assert!(
+            !context.flake_target.starts_with('~'),
+            "Command receives literal unexpanded target: {}",
+            context.flake_target
+        );
+    }
+
+    #[test]
+    fn unicode_input_must_remain_visible_after_horizontal_scrolling() {
+        let backend = ratatui::backend::TestBackend::new(30, 15);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let input = tui_input::Input::new("界".repeat(40));
+        terminal
+            .draw(|frame| {
+                ui::input_modal::render_input_modal(
+                    frame,
+                    frame.area(),
+                    "test",
+                    &input,
+                    "",
+                    "",
+                    &theme::Theme::default(),
+                );
+            })
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| cell.symbol().contains('界')),
+            "Input vanished: display-cell scroll offset was used as a character index"
+        );
+    }
+
+    #[test]
+    fn long_closure_search_must_not_panic() {
+        let result = std::panic::catch_unwind(|| {
+            let backend = ratatui::backend::TestBackend::new(80, 30);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let state = app::ClosureDiffState {
+                items: Vec::new(),
+                filtered_indices: Vec::new(),
+                search_input: tui_input::Input::new("x".repeat(usize::from(u16::MAX))),
+                scroll_offset: 0,
+                is_identical_closure: false,
+                on_confirm_task: None,
+                return_screen: Box::new(app::Screen::TopMenu),
+                title_suffix: String::new(),
+            };
+            terminal
+                .draw(|frame| {
+                    ui::closure_diff::render_closure_diff(
+                        frame,
+                        frame.area(),
+                        &state,
+                        &theme::Theme::default(),
+                    );
+                })
+                .unwrap();
+        });
+        assert!(
+            result.is_ok(),
+            "Long user input overflowed cursor coordinates"
+        );
+    }
 }

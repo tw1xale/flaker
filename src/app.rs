@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::actions::{detect_flake_context, git, nix};
+use crate::actions::{FlakeContext, detect_flake_context, git, nix};
 use crate::config::{Config, load_config};
 use crate::theme::{self, Theme};
 use crate::ui::{
@@ -251,7 +251,12 @@ impl App {
         let generation = nix::get_system_generation();
         let config = load_config();
         let theme = Theme::from_config(&config);
-        let ctx = detect_flake_context(&config);
+        let ctx = detect_flake_context(&config).unwrap_or_else(|_| FlakeContext {
+            flake_dir: std::path::PathBuf::from("/etc/nixos"),
+            flake_target: "/etc/nixos".to_string(),
+            is_git: false,
+            needs_sudo: true,
+        });
 
         Self {
             should_quit: false,
@@ -273,11 +278,12 @@ impl App {
 
     pub fn refresh_metadata(&mut self) {
         self.generation = nix::get_system_generation();
-        let ctx = detect_flake_context(&self.config);
-        self.flake_dir = ctx.flake_dir;
-        self.flake_target = ctx.flake_target;
-        self.is_git = ctx.is_git;
-        self.needs_sudo = ctx.needs_sudo;
+        if let Ok(ctx) = detect_flake_context(&self.config) {
+            self.flake_dir = ctx.flake_dir;
+            self.flake_target = ctx.flake_target;
+            self.is_git = ctx.is_git;
+            self.needs_sudo = ctx.needs_sudo;
+        }
     }
 
     pub fn render(&self, frame: &mut Frame) {
@@ -1724,7 +1730,7 @@ impl App {
                 });
             }
             FilterFlow::TrimHistory => {
-                if git::is_head_commit(&self.flake_dir, &selected_hash) {
+                if git::is_head_commit(&self.flake_dir, &selected_hash).unwrap_or(false) {
                     self.screen = Screen::Result(ResultState {
                         is_success: false,
                         title: "CANNOT TRIM TO HEAD".to_string(),
@@ -1910,14 +1916,16 @@ impl App {
             };
 
         if let Some((hash, file_opt, is_patch)) = action_to_take {
-            let has_parent = git::has_parent_commit(&self.flake_dir, &hash);
-            let is_head = git::is_head_commit(&self.flake_dir, &hash);
+            let has_parent = git::has_parent_commit(&self.flake_dir, &hash).unwrap_or(false);
+            let is_head = git::is_head_commit(&self.flake_dir, &hash).unwrap_or(false);
             let is_rollback = if let Some(ref file) = file_opt {
                 is_head
-                    && git::is_file_identical_to_head(&self.flake_dir, &hash, file)
+                    && git::is_file_identical_to_head(&self.flake_dir, &hash, file).unwrap_or(false)
                     && has_parent
             } else {
-                is_head && git::is_commit_identical_to_head(&self.flake_dir, &hash) && has_parent
+                is_head
+                    && git::is_commit_identical_to_head(&self.flake_dir, &hash).unwrap_or(false)
+                    && has_parent
             };
             let target_ref = if is_rollback {
                 format!("{hash}~1")
@@ -2403,7 +2411,9 @@ mod tests {
     #[test]
     fn test_file_filter_head_rollback() {
         let repo_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        if !crate::actions::is_git_repo(repo_dir) || !git::has_parent_commit(repo_dir, "HEAD") {
+        if !crate::actions::is_git_repo(repo_dir)
+            || !git::has_parent_commit(repo_dir, "HEAD").unwrap_or(false)
+        {
             return;
         }
 

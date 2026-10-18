@@ -78,12 +78,7 @@ pub fn render_input_modal(
     let display_text = if input.value().is_empty() {
         Span::styled(default_text, Style::default().fg(theme.faint_hint))
     } else {
-        let visible: String = input
-            .value()
-            .chars()
-            .skip(scroll)
-            .take(max_input_width)
-            .collect();
+        let visible = crate::ui::slice_by_column_width(input.value(), scroll, max_input_width);
         Span::styled(visible, Style::default().fg(theme.text))
     };
 
@@ -98,13 +93,19 @@ pub fn render_input_modal(
     frame.render_widget(input_p, chunks[4]);
 
     // Position cursor exactly based on input.visual_cursor() and scroll
-    let start_x = chunks[4].x + 2; // block left border (1) + left margin space (1)
+    let start_x = chunks[4].x.saturating_add(2); // block left border (1) + left margin space (1)
     let cursor_offset =
         u16::try_from(input.visual_cursor().saturating_sub(scroll)).unwrap_or(u16::MAX);
     let cursor_x = start_x.saturating_add(cursor_offset);
-    let cursor_y = chunks[4].y + 1;
-    if cursor_x < chunks[4].x + chunks[4].width.saturating_sub(1)
-        && cursor_y < chunks[4].y + chunks[4].height.saturating_sub(1)
+    let cursor_y = chunks[4].y.saturating_add(1);
+    if cursor_x
+        < chunks[4]
+            .x
+            .saturating_add(chunks[4].width.saturating_sub(1))
+        && cursor_y
+            < chunks[4]
+                .y
+                .saturating_add(chunks[4].height.saturating_sub(1))
     {
         frame.set_cursor_position((cursor_x, cursor_y));
     }

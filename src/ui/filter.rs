@@ -121,13 +121,8 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
                 Style::default().fg(theme.faint_hint),
             )
         } else {
-            let visible: String = params
-                .input
-                .value()
-                .chars()
-                .skip(scroll)
-                .take(input_max_w)
-                .collect();
+            let visible =
+                crate::ui::slice_by_column_width(params.input.value(), scroll, input_max_w);
             Span::styled(visible, Style::default().fg(theme.text))
         },
     ]);
@@ -221,12 +216,16 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     frame.render_widget(list, list_area);
 
     // Set cursor on search query according to input.visual_cursor() and scroll
-    let start_x = search_area.x + 1 + prefix_width;
+    let start_x = search_area.x.saturating_add(1).saturating_add(prefix_width);
     let cursor_offset =
         u16::try_from(params.input.visual_cursor().saturating_sub(scroll)).unwrap_or(u16::MAX);
     let cursor_x = start_x.saturating_add(cursor_offset);
-    let cursor_y = search_area.y + 1;
-    if cursor_x < search_area.x + search_area.width.saturating_sub(1) {
+    let cursor_y = search_area.y.saturating_add(1);
+    if cursor_x
+        < search_area
+            .x
+            .saturating_add(search_area.width.saturating_sub(1))
+    {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 
@@ -259,45 +258,41 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
         ])
         .split(preview_inner);
 
-        let preview_visible_height = preview_chunks[0].height as usize;
+        let max_preview_lines = preview_chunks[0].height as usize;
+        let visible_preview_lines: Vec<ListItem> = params
+            .preview_lines
+            .iter()
+            .skip(params.preview_scroll)
+            .take(max_preview_lines)
+            .map(|line| {
+                let styled_line = format_diff_line(line, theme);
+                ListItem::new(styled_line)
+            })
+            .collect();
 
-        let visible_lines: Vec<Line> = if params.preview_lines.is_empty() {
-            vec![Line::from(Span::styled(
-                " No preview available",
-                Style::default().fg(theme.faint_hint),
-            ))]
-        } else {
-            params
-                .preview_lines
-                .iter()
-                .skip(params.preview_scroll)
-                .take(preview_visible_height)
-                .map(|raw| format_diff_line(raw, theme))
-                .collect()
-        };
+        let preview_list = List::new(visible_preview_lines);
+        frame.render_widget(preview_list, preview_chunks[0]);
 
-        let preview_p = Paragraph::new(visible_lines);
-        frame.render_widget(preview_p, preview_chunks[0]);
-
-        // Footer with scroll position
-        let scroll_hint = if total_lines > preview_visible_height {
+        // Diff pane scroll position footer
+        let scroll_footer = if total_lines > max_preview_lines {
+            let current_end = (params.preview_scroll + max_preview_lines).min(total_lines);
             format!(
-                "Lines {}-{} of {} [PgUp/PgDn]",
+                "Lines {}-{}/{} (Scroll: \u{2191}/\u{2193})",
                 params.preview_scroll + 1,
-                (params.preview_scroll + preview_visible_height).min(total_lines),
+                current_end,
                 total_lines
             )
         } else if total_lines > 0 {
-            format!("{} lines", total_lines)
+            format!("{total_lines} lines")
         } else {
-            String::new()
+            "No changes".to_string()
         };
 
-        let footer_p = Paragraph::new(Line::from(vec![Span::styled(
-            scroll_hint,
+        let scroll_footer_p = Paragraph::new(Line::from(vec![Span::styled(
+            scroll_footer,
             Style::default().fg(theme.faint_hint),
         )]))
         .alignment(Alignment::Right);
-        frame.render_widget(footer_p, preview_chunks[1]);
+        frame.render_widget(scroll_footer_p, preview_chunks[1]);
     }
 }

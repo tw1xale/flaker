@@ -137,6 +137,29 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
 
     let prefix_text = format!(" {} Filter: ", theme::ICON_SEARCH);
     let prefix_width = unicode_width::UnicodeWidthStr::width(prefix_text.as_str()) as u16;
+    let count_detail_w = unicode_width::UnicodeWidthStr::width(count_detail.as_str()) as u16;
+
+    let input_max_w = (chunks[2]
+        .width
+        .saturating_sub(prefix_width)
+        .saturating_sub(count_detail_w)) as usize;
+    let input_max_w = input_max_w.max(1);
+    let scroll = state.search_input.visual_scroll(input_max_w);
+
+    let query_span = if query.is_empty() {
+        Span::styled(
+            "Type to search packages...",
+            Style::default().fg(theme.faint_hint),
+        )
+    } else {
+        let visible = crate::ui::slice_by_column_width(query, scroll, input_max_w);
+        Span::styled(
+            visible,
+            Style::default()
+                .fg(theme.text)
+                .add_modifier(Modifier::UNDERLINED),
+        )
+    };
 
     let search_line = Line::from(vec![
         Span::styled(
@@ -145,26 +168,18 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
                 .fg(theme.selected)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            if query.is_empty() {
-                "Type to search packages..."
-            } else {
-                query
-            },
-            if query.is_empty() {
-                Style::default().fg(theme.faint_hint)
-            } else {
-                Style::default()
-                    .fg(theme.text)
-                    .add_modifier(Modifier::UNDERLINED)
-            },
-        ),
+        query_span,
         Span::styled(count_detail, Style::default().fg(theme.faint_hint)),
     ]);
     let search_p = Paragraph::new(search_line);
     frame.render_widget(search_p, chunks[2]);
 
-    let cursor_x = chunks[2].x + prefix_width + (state.search_input.visual_cursor() as u16);
+    let cursor_offset = u16::try_from(state.search_input.visual_cursor().saturating_sub(scroll))
+        .unwrap_or(u16::MAX);
+    let cursor_x = chunks[2]
+        .x
+        .saturating_add(prefix_width)
+        .saturating_add(cursor_offset);
     let cursor_y = chunks[2].y;
     if cursor_x < chunks[2].right() {
         frame.set_cursor_position((cursor_x, cursor_y));
@@ -414,5 +429,26 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn test_long_closure_search_must_not_overflow_cursor() {
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = ClosureDiffState {
+            items: Vec::new(),
+            filtered_indices: Vec::new(),
+            search_input: Input::new("x".repeat(usize::from(u16::MAX))),
+            scroll_offset: 0,
+            is_identical_closure: false,
+            on_confirm_task: None,
+            return_screen: Box::new(crate::app::Screen::TopMenu),
+            title_suffix: String::new(),
+        };
+        terminal
+            .draw(|frame| {
+                render_closure_diff(frame, frame.area(), &state, &Theme::default());
+            })
+            .unwrap();
     }
 }

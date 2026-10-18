@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build-release:
     name: Build & Release
@@ -20,6 +24,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
+          components: clippy
+
+      - name: Verify Tests and Lints
+        run: |
+          set -e -o pipefail
+          cargo test --locked --all-targets --all-features
+          cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools

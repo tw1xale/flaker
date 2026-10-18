@@ -38,6 +38,9 @@ pub struct FlakeContext {
     pub needs_sudo: bool,
 }
 
+mod nix_syntax;
+pub use nix_syntax::attribute_names as parse_nix_attribute_names;
+
 /// Strips comments (# and //) and quoted strings (" ... ") to prevent brace tracking errors.
 pub fn strip_nix_comments_and_strings(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
@@ -62,8 +65,7 @@ pub fn strip_nix_comments_and_strings(line: &str) -> String {
     out
 }
 
-/// Extracts all `nixosConfigurations.<name>` identifiers from flake content.
-pub fn parse_flake_configs(content: &str) -> Vec<String> {
+pub fn fallback_parse_flake_configs(content: &str) -> Vec<String> {
     let mut configs = Vec::new();
     let mut in_configs_block = false;
     let mut in_pending_brace = false;
@@ -114,14 +116,15 @@ pub fn parse_flake_configs(content: &str) -> Vec<String> {
                 }
             }
         } else {
-            let opens = trimmed.chars().filter(|&c| c == '{').count();
-            let closes = trimmed.chars().filter(|&c| c == '}').count();
+            let clean = strip_nix_comments_and_strings(trimmed);
+            let opens = clean.chars().filter(|&c| c == '{').count();
+            let closes = clean.chars().filter(|&c| c == '}').count();
 
             if brace_depth == 1
                 && let Some((name_part, _)) = trimmed.split_once('=')
             {
-                let clean = name_part.trim().trim_matches('"');
-                let valid_name: String = clean
+                let clean_name = name_part.trim().trim_matches('"');
+                let valid_name: String = clean_name
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
                     .collect();
@@ -137,6 +140,14 @@ pub fn parse_flake_configs(content: &str) -> Vec<String> {
         }
     }
     configs
+}
+
+/// Best-effort host discovery: AST parser first, resilient heuristic fallback second.
+pub fn parse_flake_configs(content: &str) -> Vec<String> {
+    match parse_nix_attribute_names(content, "nixosConfigurations") {
+        Ok(names) if !names.is_empty() => names,
+        _ => fallback_parse_flake_configs(content),
+    }
 }
 
 /// Checks if a given directory is a Git repository.
@@ -189,47 +200,26 @@ fn libc_getuid() -> u32 {
     }
 }
 
-/// Discovers the most appropriate NixOS flake directory.
-pub fn discover_flake_dir() -> PathBuf {
-    // 1. Explicit FLAKER_DIR / FLAKE_DIR env
-    if let Ok(val) = std::env::var("FLAKER_DIR").or_else(|_| std::env::var("FLAKE_DIR")) {
-        let p = expand_tilde(val.trim());
-        if p.join("flake.nix").exists() || p.exists() {
-            return p;
-        }
+/// Select the first actual flake, retaining dynamically defined user configurations.
+pub fn discover_flake_dir() -> Result<PathBuf> {
+    let mut candidates = vec![std::env::current_dir()?];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.extend([
+            home.join(".config/nixos"),
+            home.join("dotfiles/nixos"),
+            home.join("dotfiles"),
+            home.join("nixos-config"),
+            home.join("nixos"),
+        ]);
     }
-
-    let mut candidates = Vec::new();
-
-    // 2. Current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd);
-    }
-
-    // 3. Common user home directories
-    if let Ok(home) = std::env::var("HOME") {
-        let home_path = PathBuf::from(home);
-        candidates.push(home_path.join(".config").join("nixos"));
-        candidates.push(home_path.join("dotfiles").join("nixos"));
-        candidates.push(home_path.join("dotfiles"));
-        candidates.push(home_path.join("nixos-config"));
-        candidates.push(home_path.join("nixos"));
-    }
-
-    // 4. System default
     candidates.push(PathBuf::from("/etc/nixos"));
-
-    for candidate in candidates {
-        let flake_path = candidate.join("flake.nix");
-        if flake_path.exists()
-            && let Ok(content) = std::fs::read_to_string(&flake_path)
-            && !parse_flake_configs(&content).is_empty()
-        {
-            return candidate;
-        }
-    }
-
-    PathBuf::from("/etc/nixos")
+    candidates
+        .into_iter()
+        .find(|dir| dir.join("flake.nix").is_file())
+        .ok_or_else(|| {
+            anyhow::anyhow!("No flake.nix found. Pass --dir or --flake to select a configuration.")
+        })
 }
 
 /// Resolves the flake target string (e.g. "/etc/nixos#hostname" or "~/dotfiles#user") for a directory.
@@ -259,7 +249,10 @@ pub fn resolve_target_for_dir(dir: &Path) -> String {
 
         // Priority 4: If only one configuration is defined, use it
         if configs.len() == 1 {
-            return format!("{dir_str}#{}", configs[0]);
+            return format!(
+                "{dir_str}#{}",
+                configs.first().map(String::as_str).unwrap_or("")
+            );
         }
     }
 
@@ -268,136 +261,178 @@ pub fn resolve_target_for_dir(dir: &Path) -> String {
     format!("{dir_str}#{fallback}")
 }
 
-/// Auto-detects the active NixOS flake target and environment context, incorporating Config overrides.
-pub fn detect_flake_context(config: &Config) -> FlakeContext {
-    // 1. Explicit override via environment variable or config.general.flake_target
+/// Remote targets have no local worktree to update, commit or reset.
+pub fn is_remote_target(target: &str) -> bool {
+    let reference = target
+        .split_once('#')
+        .map_or(target, |(reference, _)| reference);
+    reference.contains(':') && !reference.starts_with("path:")
+}
+
+fn absolute_flake_dir(path: &str) -> Result<PathBuf> {
+    let expanded = expand_tilde(path);
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()?.join(expanded)
+    };
+    Ok(absolute.canonicalize().unwrap_or(absolute))
+}
+
+pub fn detect_flake_context(config: &Config) -> Result<FlakeContext> {
     let target_override = std::env::var("FLAKER_TARGET")
         .or_else(|_| std::env::var("FLAKE_TARGET"))
         .ok()
-        .filter(|s| !s.trim().is_empty())
+        .filter(|target| !target.trim().is_empty())
         .or_else(|| {
-            if !config.general.flake_target.trim().is_empty() {
-                Some(config.general.flake_target.trim().to_string())
-            } else {
-                None
-            }
+            (!config.general.flake_target.trim().is_empty())
+                .then(|| config.general.flake_target.trim().to_string())
         });
-
-    if let Some(target_str) = target_override {
-        let (dir_part, _target_name) = if let Some((dir, name)) = target_str.split_once('#') {
-            (dir, name)
-        } else {
-            (target_str.as_str(), "")
-        };
-
-        let is_remote_uri = dir_part.starts_with("github:")
-            || dir_part.starts_with("git+")
-            || dir_part.starts_with("http:")
-            || dir_part.starts_with("https:");
-        let dir = if is_remote_uri {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else if dir_part.is_empty() || dir_part == "." {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else {
-            expand_tilde(dir_part)
-        };
-
-        let is_git = is_git_repo(&dir);
-        let needs_sudo = check_needs_sudo(&dir);
-
-        return FlakeContext {
-            flake_dir: dir,
-            flake_target: target_str,
-            is_git,
-            needs_sudo,
-        };
-    }
-
-    // 2. Explicit directory override via environment variable or config.general.flake_dir
-    let dir = if let Ok(val) = std::env::var("FLAKER_DIR").or_else(|_| std::env::var("FLAKE_DIR"))
-        && !val.trim().is_empty()
-    {
-        expand_tilde(val.trim())
-    } else if !config.general.flake_dir.trim().is_empty() {
-        expand_tilde(config.general.flake_dir.trim())
-    } else {
-        discover_flake_dir()
-    };
-
-    let is_git = is_git_repo(&dir);
-    let needs_sudo = check_needs_sudo(&dir);
-    let flake_target = resolve_target_for_dir(&dir);
-
-    FlakeContext {
-        flake_dir: dir,
-        flake_target,
-        is_git,
-        needs_sudo,
-    }
-}
-
-/// Helper to construct a command with or without sudo in the specified directory.
-pub fn make_cmd(program: &str, dir: &Path, needs_sudo: bool) -> Command {
-    let mut cmd = if needs_sudo {
-        let mut c = Command::new("sudo");
-        c.arg(program);
-        if program == "git" {
-            // Prevent arbitrary code execution via untrusted repository hooks when running as root
-            c.args(["-c", "core.hooksPath=/dev/null"]);
+    if let Some(target) = target_override {
+        if is_remote_target(&target) {
+            return Ok(FlakeContext {
+                flake_dir: std::env::current_dir()?,
+                flake_target: target,
+                is_git: false,
+                needs_sudo: false,
+            });
         }
-        c
-    } else {
-        Command::new(program)
+        let (path, selector) = target
+            .split_once('#')
+            .map_or((target.as_str(), None), |(path, selector)| {
+                (path, Some(selector))
+            });
+        let path = path.strip_prefix("path:").unwrap_or(path);
+        let dir = absolute_flake_dir(if path.is_empty() { "." } else { path })?;
+        let flake_target = match selector {
+            Some(selector) if !selector.is_empty() => format!("{}#{selector}", dir.display()),
+            _ => resolve_target_for_dir(&dir),
+        };
+        return Ok(FlakeContext {
+            is_git: is_git_repo(&dir),
+            needs_sudo: check_needs_sudo(&dir),
+            flake_dir: dir,
+            flake_target,
+        });
+    }
+    let directory = std::env::var("FLAKER_DIR")
+        .or_else(|_| std::env::var("FLAKE_DIR"))
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .or_else(|| {
+            (!config.general.flake_dir.trim().is_empty())
+                .then(|| config.general.flake_dir.trim().to_string())
+        });
+    let dir = match directory {
+        Some(path) => absolute_flake_dir(&path)?,
+        None => discover_flake_dir()?,
     };
-    cmd.current_dir(dir);
-    cmd
+    Ok(FlakeContext {
+        is_git: is_git_repo(&dir),
+        needs_sudo: check_needs_sudo(&dir),
+        flake_target: resolve_target_for_dir(&dir),
+        flake_dir: dir,
+    })
 }
 
-/// RAII Scope Guard that ensures terminal raw mode and alternate screen are ALWAYS restored upon drop.
+/// Trust only the repository explicitly selected by the user, for this command.
+/// Child Git processes inside Nix receive the same scoped setting, including sudo.
+pub fn make_cmd(program: &str, dir: &Path, needs_sudo: bool) -> Command {
+    let repository = dir.canonicalize().ok().and_then(|path| {
+        path.ancestors()
+            .find(|ancestor| ancestor.join(".git").exists())
+            .map(Path::to_path_buf)
+    });
+    let mut command = if needs_sudo {
+        let mut command = Command::new("sudo");
+        if let Some(root) = &repository {
+            command.args([
+                "env",
+                "GIT_CONFIG_COUNT=2",
+                "GIT_CONFIG_KEY_0=safe.directory",
+            ]);
+            command.arg(format!("GIT_CONFIG_VALUE_0={}", root.display()));
+            command.args([
+                "GIT_CONFIG_KEY_1=core.hooksPath",
+                "GIT_CONFIG_VALUE_1=/dev/null",
+            ]);
+        }
+        command.arg(program);
+        command
+    } else {
+        let mut command = Command::new(program);
+        if let Some(root) = &repository {
+            if program == "git" {
+                command
+                    .arg("-c")
+                    .arg(format!("safe.directory={}", root.display()));
+            } else if program == "nix" || program == "nixos-rebuild" {
+                command
+                    .env("GIT_CONFIG_COUNT", "1")
+                    .env("GIT_CONFIG_KEY_0", "safe.directory")
+                    .env("GIT_CONFIG_VALUE_0", root);
+            }
+        }
+        command
+    };
+    command.current_dir(dir);
+    command
+}
+
+/// Suspend only when a TUI is active; nested command batches stay suspended.
 pub struct TerminalSuspender {
     active: bool,
 }
 
 impl TerminalSuspender {
     pub fn suspend() -> Result<Self> {
-        disable_raw_mode().context("Failed to disable raw mode before running command")?;
-        let mut out = stdout();
-        let _ = execute!(
-            out,
+        if !crossterm::terminal::is_raw_mode_enabled()? {
+            return Ok(Self { active: false });
+        }
+        disable_raw_mode().context("Failed to disable terminal raw mode")?;
+        if let Err(error) = execute!(
+            stdout(),
             LeaveAlternateScreen,
             Show,
             crossterm::event::DisableMouseCapture
-        );
+        ) {
+            enable_raw_mode().context("Failed to restore raw mode after suspension failed")?;
+            return Err(error.into());
+        }
         Ok(Self { active: true })
     }
 
-    pub fn resume(&mut self) {
+    pub fn resume(&mut self) -> Result<()> {
         if self.active {
-            self.active = false;
-            let mut out = stdout();
-            let _ = execute!(
-                out,
+            execute!(
+                stdout(),
                 EnterAlternateScreen,
                 Hide,
                 crossterm::event::EnableMouseCapture
-            );
-            let _ = enable_raw_mode();
-            flush_stdin_events();
+            )
+            .context("Failed to restore alternate screen")?;
+            enable_raw_mode().context("Failed to restore raw mode")?;
+            flush_stdin_events()?;
+            self.active = false;
         }
+        Ok(())
     }
 }
 
 impl Drop for TerminalSuspender {
     fn drop(&mut self) {
-        self.resume();
+        // Destructors cannot return errors; the normal path calls resume explicitly.
+        if let Err(error) = self.resume() {
+            eprintln!("Terminal cleanup failed: {error:#}");
+        }
     }
 }
 
-/// Flushes any accumulated stdin events (e.g. extra Enter key from password prompt).
-pub fn flush_stdin_events() {
-    while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-        let _ = event::read();
+pub fn flush_stdin_events() -> Result<()> {
+    while event::poll(Duration::from_millis(0))? {
+        event::read()?;
     }
+    Ok(())
 }
 
 /// Prints a styled action header in terminal mode before command execution, using the configured palette.
@@ -413,7 +448,7 @@ pub fn print_action_header_cli_with_theme(
     command_desc: &str,
     theme: &crate::theme::Theme,
 ) {
-    println!("\x1b[2J\x1b[H"); // Clear screen
+    println!(); // Preserve previous command output within a suspended batch.
 
     let term_width = crossterm::terminal::size()
         .map(|(w, _)| w as usize)
@@ -483,10 +518,12 @@ pub fn run_visible(title: &str, command_desc: &str, cmd: &mut Command) -> Result
     if !status.success() {
         eprintln!("\n\x1b[33mPress Enter to return to Flaker...\x1b[0m");
         let mut buf = String::new();
-        let _ = std::io::stdin().read_line(&mut buf);
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            std::io::stdin().read_line(&mut buf)?;
+        }
     }
 
-    suspender.resume();
+    suspender.resume()?;
     Ok(status)
 }
 
@@ -584,7 +621,7 @@ mod tests {
         if is_git_repo(repo_dir) {
             let _ = git::is_head_commit(repo_dir, "HEAD");
             let _ = git::is_head_commit(repo_dir, "head");
-            assert!(!git::is_head_commit(repo_dir, "nonexistent123456789"));
+            assert!(!git::is_head_commit(repo_dir, "nonexistent123456789").unwrap_or(false));
 
             let _ = git::has_parent_commit(repo_dir, "HEAD");
             let _ = git::is_file_identical_to_head(repo_dir, "HEAD", "Cargo.toml");

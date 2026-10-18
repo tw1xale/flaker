@@ -389,7 +389,7 @@ pub fn get_closure_diff_between(
         });
     }
 
-    let mut items = diff_closures(before_closure, after_closure).unwrap_or_default();
+    let mut items = diff_closures(before_closure, after_closure)?;
     let rebuilts = find_rebuilt_system_packages(before_closure, after_closure, &items);
     items.extend(rebuilts);
 
@@ -453,9 +453,10 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
         let v: serde_json::Value =
             serde_json::from_str(&content).with_context(|| "Failed to parse flake.lock as JSON")?;
 
+        let root_name = v.get("root").and_then(|r| r.as_str()).unwrap_or("root");
         if let Some(root_inputs) = v
             .get("nodes")
-            .and_then(|n| n.get("root"))
+            .and_then(|n| n.get(root_name))
             .and_then(|r| r.get("inputs"))
             .and_then(|i| i.as_object())
         {
@@ -524,56 +525,9 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
     let flake_nix_path = dir.join("flake.nix");
     if flake_nix_path.exists() {
         let content = fs::read_to_string(&flake_nix_path).unwrap_or_default();
-        let mut names = Vec::new();
-        let mut in_inputs_block = false;
-
-        let mut brace_depth: usize = 0;
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if !in_inputs_block {
-                if (trimmed.starts_with("inputs") || trimmed.contains("inputs ="))
-                    && trimmed.contains('{')
-                {
-                    in_inputs_block = true;
-                    brace_depth = 1;
-                    let clean = crate::actions::strip_nix_comments_and_strings(trimmed);
-                    let opens = clean.chars().filter(|&c| c == '{').count();
-                    let closes = clean.chars().filter(|&c| c == '}').count();
-                    if opens > 1 {
-                        brace_depth += opens - 1;
-                    }
-                    brace_depth = brace_depth.saturating_sub(closes);
-                    if brace_depth == 0 {
-                        break;
-                    }
-                }
-            } else {
-                let clean = crate::actions::strip_nix_comments_and_strings(trimmed);
-                let opens = clean.chars().filter(|&c| c == '{').count();
-                let closes = clean.chars().filter(|&c| c == '}').count();
-
-                if brace_depth == 1 {
-                    if let Some((name_part, _)) = trimmed.split_once('.') {
-                        let clean = name_part.trim().trim_matches('"');
-                        if !clean.is_empty() && !names.contains(&clean.to_string()) {
-                            names.push(clean.to_string());
-                        }
-                    } else if let Some((name_part, _)) = trimmed.split_once('=') {
-                        let clean = name_part.trim().trim_matches('"');
-                        if !clean.is_empty() && !names.contains(&clean.to_string()) {
-                            names.push(clean.to_string());
-                        }
-                    }
-                }
-
-                brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
-                if brace_depth == 0 {
-                    break;
-                }
-            }
-        }
-
-        if !names.is_empty() {
+        if let Ok(mut names) = crate::actions::parse_nix_attribute_names(&content, "inputs")
+            && !names.is_empty()
+        {
             names.sort();
             return Ok(names
                 .into_iter()
@@ -643,7 +597,7 @@ pub fn cleanup_nix_store() -> Result<()> {
     let mut cmd1 = make_cmd("nix-collect-garbage", Path::new("."), needs_sudo);
     cmd1.arg("-d");
     let s1 = run_visible(
-        "COLLECTING OLD GENERATIONS (1/3)",
+        "COLLECTING OLD GENERATIONS & GARBAGE (1/2)",
         if needs_sudo {
             "sudo nix-collect-garbage -d"
         } else {
@@ -658,37 +612,20 @@ pub fn cleanup_nix_store() -> Result<()> {
     }
 
     let mut cmd2 = make_cmd("nix-store", Path::new("."), needs_sudo);
-    cmd2.arg("--gc");
+    cmd2.arg("--optimise");
     let s2 = run_visible(
-        "COLLECTING STORE GARBAGE (2/3)",
-        if needs_sudo {
-            "sudo nix-store --gc"
-        } else {
-            "nix-store --gc"
-        },
-        &mut cmd2,
-    )
-    .context("Failed to run nix-store --gc")?;
-
-    if !s2.success() {
-        anyhow::bail!("nix-store --gc exited with status: {s2}");
-    }
-
-    let mut cmd3 = make_cmd("nix-store", Path::new("."), needs_sudo);
-    cmd3.arg("--optimise");
-    let s3 = run_visible(
-        "OPTIMIZING NIX STORE (3/3)",
+        "OPTIMIZING NIX STORE (2/2)",
         if needs_sudo {
             "sudo nix-store --optimise"
         } else {
             "nix-store --optimise"
         },
-        &mut cmd3,
+        &mut cmd2,
     )
     .context("Failed to run nix-store --optimise")?;
 
-    if !s3.success() {
-        anyhow::bail!("nix-store --optimise exited with status: {s3}");
+    if !s2.success() {
+        anyhow::bail!("nix-store --optimise exited with status: {s2}");
     }
 
     Ok(())
@@ -980,6 +917,42 @@ warning: some warning
         clean_result_link(&temp_dir, false);
         assert!(link_path.symlink_metadata().is_err());
 
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_failed_closure_comparison_must_propagate() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("flaker_test_failed_closure_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let before = temp_dir.join("non-store-before");
+        let after = temp_dir.join("non-store-after");
+        let _ = std::fs::create_dir_all(&before);
+        let _ = std::fs::create_dir_all(&after);
+
+        let result = get_closure_diff_between(&before, &after);
+        assert!(
+            result.is_err(),
+            "expected comparison error for non-store paths, received {result:?}"
+        );
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_lockfile_root_identifier_must_be_respected() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("flaker_test_renamed_root_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let lock_json = r#"{"version":7,"root":"project","nodes":{"project":{"inputs":{"nixpkgs":"nixpkgs"}},"nixpkgs":{"locked":{"type":"github","owner":"NixOS","repo":"nixpkgs","rev":"abcdef"}}}}"#;
+        std::fs::write(temp_dir.join("flake.lock"), lock_json).unwrap();
+
+        let result = get_flake_inputs(&temp_dir);
+        assert!(
+            result.is_ok(),
+            "valid renamed root was rejected: {result:?}"
+        );
+        let inputs = result.unwrap();
+        assert_eq!(inputs.first().map(|i| i.name.as_str()), Some("nixpkgs"));
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

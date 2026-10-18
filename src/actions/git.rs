@@ -1,533 +1,403 @@
 use crate::actions::{make_cmd, run_silent, run_visible};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
-/// Adds files to the git staging area.
-pub fn git_add(dir: &Path, needs_sudo: bool, path: &str) -> Result<()> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["add", path]);
+fn read_command(dir: &Path) -> Command {
+    make_cmd("git", dir, false)
+}
 
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let status = run_visible(
-        "STAGING CHANGES",
-        &format!("{prefix}git add {path}"),
-        &mut cmd,
-    )
-    .context("Failed to execute git add")?;
+fn checked_output(dir: &Path, args: &[&str]) -> Result<Output> {
+    let output = run_silent(read_command(dir).args(args))?;
+    check_output(&output, args.first().copied().unwrap_or("command"))?;
+    Ok(output)
+}
 
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git add exited with status: {status}");
+fn check_output(output: &Output, operation: &str) -> Result<()> {
+    if !output.status.success() {
+        bail!(
+            "git {operation} failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
+    Ok(())
 }
 
-/// Checks if there are staged changes ready to be committed (read-only, no sudo).
-pub fn has_staged_changes(dir: &Path) -> Result<bool> {
-    let mut cmd = Command::new("git");
-    cmd.args(["diff", "--cached", "--quiet"]).current_dir(dir);
-
-    let output = run_silent(&mut cmd).context("Failed to check staged git diff")?;
-
-    // exit code 0 means no diff, exit code 1 means differences exist
-    Ok(!output.status.success())
-}
-
-/// Checks if there are any uncommitted changes in the repository (read-only, no sudo).
-pub fn has_uncommitted_changes(dir: &Path) -> Result<bool> {
-    let mut cmd = Command::new("git");
-    cmd.args(["status", "--porcelain"]).current_dir(dir);
-
-    let output = run_silent(&mut cmd).context("Failed to check git status")?;
-    let out_str = String::from_utf8_lossy(&output.stdout);
-    Ok(!out_str.trim().is_empty())
-}
-
-/// Commits staged changes with the provided message.
-pub fn git_commit(dir: &Path, needs_sudo: bool, message: &str) -> Result<()> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["commit", "-m", message]);
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let status = run_visible(
-        "RECORDING GIT COMMIT",
-        &format!("{prefix}git commit -m \"{message}\""),
-        &mut cmd,
-    )
-    .context("Failed to execute git commit")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git commit exited with status: {status}");
-    }
-}
-
-/// Checks if the repository has any configured remote repositories (read-only, no sudo).
-pub fn has_remote(dir: &Path) -> bool {
-    let mut cmd = Command::new("git");
-    cmd.args(["remote"]).current_dir(dir);
-    if let Ok(out) = run_silent(&mut cmd) {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        out.status.success() && !stdout.trim().is_empty()
-    } else {
-        false
-    }
-}
-
-/// Retrieves the current git branch name, returning None if detached HEAD (read-only, no sudo).
-pub fn get_current_branch(dir: &Path) -> Option<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(["branch", "--show-current"]).current_dir(dir);
-
-    if let Ok(out) = run_silent(&mut cmd) {
-        let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if out.status.success() && !branch.is_empty() {
-            return Some(branch);
+fn diff_status(output: &Output) -> Result<bool> {
+    match output.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => {
+            check_output(output, "diff")?;
+            bail!("git diff returned an unexpected status")
         }
     }
-
-    None
 }
 
-/// Pushes commits to the remote repository.
+fn mutation(dir: &Path, needs_sudo: bool, args: &[&str], title: &str) -> Result<()> {
+    let mut command = make_cmd("git", dir, needs_sudo);
+    command.args(args);
+    let status = run_visible(title, &format!("git {}", args.join(" ")), &mut command)?;
+    if !status.success() {
+        bail!("git {} exited with status {status}", args.join(" "));
+    }
+    Ok(())
+}
+
+/// Stage exactly the supplied literal path, including a tracked deletion.
+pub fn git_add(dir: &Path, needs_sudo: bool, path: &str) -> Result<()> {
+    mutation(
+        dir,
+        needs_sudo,
+        &["--literal-pathspecs", "add", "-A", "--", path],
+        "STAGING CHANGES",
+    )
+}
+
+/// Only diff exit 1 indicates a change; other failures must stop the workflow.
+pub fn has_staged_changes(dir: &Path) -> Result<bool> {
+    let output = run_silent(read_command(dir).args(["diff", "--cached", "--quiet"]))?;
+    diff_status(&output)
+}
+
+/// Include staged, unstaged and untracked changes, propagating repository errors.
+pub fn has_uncommitted_changes(dir: &Path) -> Result<bool> {
+    let output = checked_output(
+        dir,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    Ok(!output.stdout.is_empty())
+}
+
+pub fn ensure_clean(dir: &Path) -> Result<()> {
+    if has_uncommitted_changes(dir)? {
+        bail!(
+            "Commit or save your local changes before restoring or rewriting history. No files were changed."
+        );
+    }
+    Ok(())
+}
+
+/// Protect existing edits to a path while allowing unrelated staged work.
+pub fn ensure_path_clean(dir: &Path, path: &str) -> Result<()> {
+    let output = checked_output(
+        dir,
+        &[
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--",
+            path,
+        ],
+    )?;
+    if !output.stdout.is_empty() {
+        bail!("Save the existing changes to '{path}' before updating it. No files were changed.");
+    }
+    Ok(())
+}
+
+/// Commit all staged changes only when the user explicitly selected that scope.
+pub fn git_commit(dir: &Path, needs_sudo: bool, message: &str) -> Result<()> {
+    mutation(
+        dir,
+        needs_sudo,
+        &["commit", "-m", message],
+        "RECORDING GIT COMMIT",
+    )
+}
+
+/// Preserve unrelated staged and unstaged changes during a scoped commit.
+pub fn git_commit_paths(
+    dir: &Path,
+    needs_sudo: bool,
+    message: &str,
+    paths: &[String],
+) -> Result<()> {
+    if paths.is_empty() {
+        bail!("No paths were selected for the commit");
+    }
+    let mut args = vec![
+        "--literal-pathspecs",
+        "commit",
+        "--only",
+        "-m",
+        message,
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    mutation(dir, needs_sudo, &args, "COMMITTING SELECTED FILES")
+}
+
+pub fn has_remote(dir: &Path) -> Result<bool> {
+    let output = checked_output(dir, &["remote"])?;
+    Ok(!output.stdout.is_empty())
+}
+
+/// Respect tracking, pushRemote and refspec settings instead of assuming origin.
 pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
-    if !has_remote(dir) {
+    if !has_remote(dir)? {
         return Ok(());
     }
-
-    let branch_opt = get_current_branch(dir);
-    let force_flag = "--force-with-lease";
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let title = if force {
-        "FORCE PUSHING TO REMOTE"
+    let args = if force {
+        vec!["push", "--force-with-lease"]
     } else {
-        "PUSHING TO REMOTE REPOSITORY"
+        vec!["push"]
     };
-
-    if let Some(ref branch) = branch_opt {
-        let mut args = vec!["push"];
-        if force {
-            args.push(force_flag);
-        }
-        args.extend(["origin", branch]);
-
-        let mut cmd = make_cmd("git", dir, needs_sudo);
-        cmd.args(&args);
-
-        let desc = format!(
-            "{prefix}git push {} origin {branch}",
-            if force { force_flag } else { "" }
-        );
-
-        let status =
-            run_visible(title, desc.trim(), &mut cmd).context("Failed to execute git push")?;
-
-        if status.success() {
-            return Ok(());
-        }
-        anyhow::bail!("git push origin {branch} failed with status: {status}");
-    }
-
-    // Fallback without explicit remote/branch (e.g. detached HEAD)
-    let mut fallback_args = vec!["push"];
-    if force {
-        fallback_args.push(force_flag);
-    }
-
-    let mut fallback_cmd = make_cmd("git", dir, needs_sudo);
-    fallback_cmd.args(&fallback_args);
-
-    let fallback_desc = format!("{prefix}git push {}", if force { force_flag } else { "" });
-
-    let fallback_status = run_visible(title, fallback_desc.trim(), &mut fallback_cmd)
-        .context("Failed to execute git push fallback")?;
-
-    if fallback_status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git push failed with status: {fallback_status}");
-    }
+    mutation(dir, needs_sudo, &args, "PUSHING TO REMOTE REPOSITORY")
 }
 
-/// Fetches all commits from history for selection, with aligned columns (read-only, no sudo).
+/// Bound synchronous history loading to keep filtering responsive.
 pub fn get_recent_commits(dir: &Path) -> Result<Vec<String>> {
-    let mut cmd = Command::new("git");
-    cmd.args(["log", "--color=never", "--format=%h%x1f%cr%x1f%s"])
-        .current_dir(dir);
-
-    let output = run_silent(&mut cmd).context("Failed to execute git log")?;
-
-    if !output.status.success() {
-        anyhow::bail!("git log exited with status: {}", output.status);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: Vec<(&str, &str, &str)> = stdout
+    let output = checked_output(
+        dir,
+        &[
+            "log",
+            "-n",
+            "200",
+            "--color=never",
+            "--format=%h%x1f%cr%x1f%s",
+        ],
+    )?;
+    let stdout = String::from_utf8(output.stdout).context("Commit history is not UTF-8")?;
+    Ok(stdout
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let mut parts = line.split('\x1f');
-            let hash = parts.next().unwrap_or("");
-            let date = parts.next().unwrap_or("");
-            let msg = parts.next().unwrap_or("");
-            (hash, date, msg)
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\x1f');
+            let hash = parts.next()?;
+            let date = parts.next()?;
+            let message = parts.next()?;
+            Some(format!("{hash} │ {date:<14} │ {message}"))
         })
-        .collect();
-
-    let max_date_len = parsed
-        .iter()
-        .map(|(_, date, _)| date.chars().count())
-        .max()
-        .unwrap_or(14)
-        .max(14);
-
-    let commits: Vec<String> = parsed
-        .into_iter()
-        .map(|(hash, date, msg)| {
-            if !hash.is_empty() {
-                format!("{hash} │ {date:<width$} │ {msg}", width = max_date_len)
-            } else {
-                msg.to_string()
-            }
-        })
-        .collect();
-
-    Ok(commits)
+        .collect())
 }
 
-/// Retrieves working directory and staged diffs (read-only, no sudo).
 pub fn get_diff(dir: &Path) -> Result<String> {
-    let mut unstaged_cmd = Command::new("git");
-    unstaged_cmd
-        .args(["diff", "--color=never"])
-        .current_dir(dir);
-    let unstaged = run_silent(&mut unstaged_cmd).context("Failed to execute git diff")?;
-
-    let mut staged_cmd = Command::new("git");
-    staged_cmd
-        .args(["diff", "--cached", "--color=never"])
-        .current_dir(dir);
-    let staged = run_silent(&mut staged_cmd).context("Failed to execute git diff --cached")?;
-
-    let mut combined = String::new();
-    let unstaged_str = String::from_utf8_lossy(&unstaged.stdout);
-    let staged_str = String::from_utf8_lossy(&staged.stdout);
-
-    if !unstaged_str.trim().is_empty() {
-        combined.push_str(&unstaged_str);
+    let unstaged = checked_output(dir, &["diff", "--color=never"])?;
+    let staged = checked_output(dir, &["diff", "--cached", "--color=never"])?;
+    let mut combined = String::from_utf8(unstaged.stdout).context("Working diff is not UTF-8")?;
+    if !combined.is_empty() && !staged.stdout.is_empty() {
+        combined.push('\n');
     }
-    if !staged_str.trim().is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(&staged_str);
-    }
-
+    combined.push_str(&String::from_utf8(staged.stdout).context("Staged diff is not UTF-8")?);
     Ok(combined)
 }
 
-/// Resets repository to the target commit (hard reset).
 pub fn git_reset_hard(dir: &Path, needs_sudo: bool, hash: &str) -> Result<()> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["reset", "--hard", hash]);
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let status = run_visible(
+    mutation(
+        dir,
+        needs_sudo,
+        &["reset", "--hard", hash],
         "HARD RESETTING REPOSITORY",
-        &format!("{prefix}git reset --hard {hash}"),
-        &mut cmd,
     )
-    .context("Failed to execute git reset --hard")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git reset --hard exited with status: {status}");
-    }
 }
 
-/// Resets repository to the target commit (soft reset).
-pub fn git_reset_soft(dir: &Path, needs_sudo: bool, hash: &str) -> Result<()> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["reset", "--soft", hash]);
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let status = run_visible(
-        "TRIMMING COMMIT HISTORY (SOFT RESET)",
-        &format!("{prefix}git reset --soft {hash}"),
-        &mut cmd,
-    )
-    .context("Failed to execute git reset --soft")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git reset --soft exited with status: {status}");
-    }
-}
-
-/// Checks out files from a specific commit into the current tree.
+/// Restore the exact tracked snapshot, including removal of newer paths.
 pub fn git_checkout_files(dir: &Path, needs_sudo: bool, hash: &str) -> Result<()> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["checkout", hash, "--", "."]);
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let status = run_visible(
-        "REVERTING WORKING TREE FILES",
-        &format!("{prefix}git checkout {hash} -- ."),
-        &mut cmd,
+    ensure_clean(dir)?;
+    mutation(
+        dir,
+        needs_sudo,
+        &[
+            "restore",
+            "--source",
+            hash,
+            "--staged",
+            "--worktree",
+            "--",
+            ":/",
+        ],
+        "RESTORING REPOSITORY SNAPSHOT",
     )
-    .context("Failed to execute git checkout")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git checkout exited with status: {status}");
-    }
 }
 
-/// Retrieves commit details, stats and diff patch for a given commit hash (read-only, no sudo).
 pub fn get_commit_diff(dir: &Path, hash: &str) -> Result<String> {
-    if hash.trim().is_empty() {
-        return Ok(String::new());
+    if hash.is_empty() {
+        bail!("A commit must be selected");
     }
-
-    let mut cmd = Command::new("git");
-    cmd.args(["show", "--stat", "--patch", "--color=never", hash])
-        .current_dir(dir);
-
-    let output = run_silent(&mut cmd).context("Failed to execute git show")?;
-    if !output.status.success() {
-        anyhow::bail!("git show exited with status: {}", output.status);
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let output = checked_output(
+        dir,
+        &["show", "--stat", "--patch", "--color=never", hash, "--"],
+    )?;
+    String::from_utf8(output.stdout).context("Commit diff is not UTF-8")
 }
 
-/// Retrieves list of modified files in a given commit (read-only, no sudo).
+/// Preserve exact paths rather than parsing Git's C-quoted display format.
 pub fn get_commit_files(dir: &Path, hash: &str) -> Result<Vec<String>> {
-    if hash.trim().is_empty() {
-        return Ok(Vec::new());
+    if hash.is_empty() {
+        bail!("A commit must be selected");
     }
-
-    let mut cmd = Command::new("git");
-    cmd.args(["show", "--pretty=", "--name-only", hash])
-        .current_dir(dir);
-
-    let output = run_silent(&mut cmd).context("Failed to list commit files")?;
-    if !output.status.success() {
-        anyhow::bail!("git show --name-only exited with status: {}", output.status);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<String> = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect();
-
-    Ok(files)
+    let output = checked_output(dir, &["show", "--pretty=", "--name-only", "-z", hash, "--"])?;
+    nul_paths(&output.stdout)
 }
 
-/// Checks if the given commit hash or reference points to the current HEAD.
-pub fn is_head_commit(dir: &Path, hash: &str) -> bool {
-    let clean_hash = hash.trim();
-    if clean_hash.is_empty() {
-        return false;
-    }
-    if clean_hash.eq_ignore_ascii_case("HEAD") {
-        return true;
-    }
-
-    let mut cmd = Command::new("git");
-    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
-    if let Ok(out) = run_silent(&mut cmd)
-        && out.status.success()
-    {
-        let full_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if full_head.starts_with(clean_hash) || clean_hash.starts_with(&full_head) {
-            return true;
-        }
-    }
-
-    let mut short_cmd = Command::new("git");
-    short_cmd
-        .args(["rev-parse", "--short", "HEAD"])
-        .current_dir(dir);
-    if let Ok(out) = run_silent(&mut short_cmd)
-        && out.status.success()
-    {
-        let short_head = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if short_head.starts_with(clean_hash) || clean_hash.starts_with(&short_head) {
-            return true;
-        }
-    }
-
-    false
+fn nul_paths(bytes: &[u8]) -> Result<Vec<String>> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            String::from_utf8(path.to_vec()).context(
+                "This repository contains a non-UTF-8 filename; refusing to use a modified path",
+            )
+        })
+        .collect()
 }
 
-/// Checks if the given commit reference has a parent commit (i.e. not an initial/root commit).
-pub fn has_parent_commit(dir: &Path, hash: &str) -> bool {
-    let parent_ref = format!("{hash}~1");
-    let mut cmd = Command::new("git");
-    cmd.args(["rev-parse", "--verify", &parent_ref])
-        .current_dir(dir);
-    if let Ok(out) = run_silent(&mut cmd) {
-        out.status.success()
-    } else {
-        false
-    }
+pub fn head(dir: &Path) -> Result<String> {
+    let output = checked_output(dir, &["rev-parse", "--verify", "HEAD"])?;
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
-/// Checks if the content of a specific file at commit `hash` is identical to current HEAD.
-pub fn is_file_identical_to_head(dir: &Path, hash: &str, file: &str) -> bool {
-    let clean_hash = hash.trim();
-    if clean_hash.is_empty() || file.trim().is_empty() {
-        return true;
-    }
-    if is_head_commit(dir, clean_hash) {
-        return true;
-    }
+pub fn is_head_commit(dir: &Path, hash: &str) -> Result<bool> {
+    let output = checked_output(
+        dir,
+        &["rev-parse", "--verify", &format!("{hash}^{{commit}}")],
+    )?;
+    Ok(String::from_utf8(output.stdout)?.trim() == head(dir)?)
+}
 
-    let mut cmd = Command::new("git");
-    cmd.args([
+pub fn has_parent_commit(dir: &Path, hash: &str) -> Result<bool> {
+    let output = checked_output(dir, &["rev-list", "--parents", "-n", "1", hash, "--"])?;
+    Ok(String::from_utf8(output.stdout)?.split_whitespace().count() > 1)
+}
+
+pub fn is_file_identical_to_head(dir: &Path, hash: &str, file: &str) -> Result<bool> {
+    let output = run_silent(read_command(dir).args([
+        "--literal-pathspecs",
         "diff",
-        "--color=never",
         "--quiet",
         "HEAD",
-        clean_hash,
+        hash,
         "--",
         file,
-    ])
-    .current_dir(dir);
-    if let Ok(out) = run_silent(&mut cmd) {
-        // exit code 0 means no differences between HEAD and clean_hash for this file
-        out.status.success()
-    } else {
-        false
-    }
+    ]))?;
+    Ok(!diff_status(&output)?)
 }
 
-/// Checks if all files in the given commit are identical to current HEAD.
-pub fn is_commit_identical_to_head(dir: &Path, hash: &str) -> bool {
-    let clean_hash = hash.trim();
-    if clean_hash.is_empty() {
-        return true;
-    }
-    if is_head_commit(dir, clean_hash) {
-        return true;
-    }
-
-    let mut cmd = Command::new("git");
-    cmd.args(["diff", "--color=never", "--quiet", "HEAD", clean_hash])
-        .current_dir(dir);
-    if let Ok(out) = run_silent(&mut cmd) {
-        out.status.success()
-    } else {
-        false
-    }
+pub fn is_commit_identical_to_head(dir: &Path, hash: &str) -> Result<bool> {
+    let output = run_silent(read_command(dir).args(["diff", "--quiet", "HEAD", hash, "--"]))?;
+    Ok(!diff_status(&output)?)
 }
 
-/// Retrieves the diff between current HEAD and the specified commit for a single file (read-only, no sudo).
-/// If the file at `hash` is already identical to HEAD, it compares HEAD against `hash~1` (showing the rollback diff).
 pub fn get_file_diff_from_commit(dir: &Path, hash: &str, file: &str) -> Result<String> {
-    if hash.trim().is_empty() || file.trim().is_empty() {
-        return Ok(String::new());
-    }
-
-    let is_identical = is_file_identical_to_head(dir, hash, file);
-    let has_parent = has_parent_commit(dir, hash);
-    let is_head = is_head_commit(dir, hash);
-    let is_rollback = is_head && is_identical && has_parent;
-    let target_ref = if is_rollback {
+    let target = if is_head_commit(dir, hash)? && has_parent_commit(dir, hash)? {
         format!("{hash}~1")
     } else {
         hash.to_string()
     };
-
-    let mut cmd = Command::new("git");
-    cmd.args(["diff", "--color=never", "HEAD", &target_ref, "--", file])
-        .current_dir(dir);
-
-    let output = run_silent(&mut cmd).context("Failed to execute git diff for file")?;
-    if !output.status.success() {
-        anyhow::bail!("git diff exited with status: {}", output.status);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    if stdout.trim().is_empty() {
-        if is_rollback {
-            Ok(format!(
-                "File '{file}' in commit {hash} has no differences compared to parent commit {target_ref}."
-            ))
-        } else if is_identical {
-            Ok(format!(
-                "File '{file}' is identical between HEAD and commit {hash}."
-            ))
-        } else {
-            Ok(format!("File '{file}' has no differences."))
-        }
-    } else if is_rollback {
-        Ok(format!(
-            "§§hint:Rollback preview (reverting changes from {hash} to {target_ref}):\n{stdout}"
-        ))
-    } else {
-        Ok(stdout)
-    }
+    let output = checked_output(
+        dir,
+        &[
+            "--literal-pathspecs",
+            "diff",
+            "--color=never",
+            "HEAD",
+            &target,
+            "--",
+            file,
+        ],
+    )?;
+    String::from_utf8(output.stdout).context("File diff is not UTF-8")
 }
 
-/// Restores a single file from a specific commit reference (e.g. hash or hash~1) into the current tree.
-pub fn git_restore_file(dir: &Path, needs_sudo: bool, target_ref: &str, file: &str) -> Result<()> {
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(["checkout", target_ref, "--", file]);
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let status = run_visible(
+/// Restore an old file or its absence if the selected commit predates its addition.
+pub fn git_restore_file(dir: &Path, needs_sudo: bool, target: &str, file: &str) -> Result<()> {
+    ensure_path_clean(dir, file)?;
+    mutation(
+        dir,
+        needs_sudo,
+        &[
+            "--literal-pathspecs",
+            "restore",
+            "--source",
+            target,
+            "--staged",
+            "--worktree",
+            "--",
+            file,
+        ],
         "RESTORING FILE FROM COMMIT",
-        &format!("{prefix}git checkout {target_ref} -- {file}"),
-        &mut cmd,
     )
-    .context("Failed to execute git checkout for file")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git checkout for file exited with status: {status}");
-    }
 }
 
-/// Interactively restores lines/hunks from a commit reference (optionally for a single file) using git checkout -p.
 pub fn git_restore_patch(
     dir: &Path,
     needs_sudo: bool,
-    target_ref: &str,
+    target: &str,
     file: Option<&str>,
 ) -> Result<()> {
-    let mut args = vec!["checkout", "-p", target_ref];
-    if let Some(f) = file {
-        args.extend(["--", f]);
+    ensure_clean(dir)?;
+    let mut args = vec![
+        "--literal-pathspecs",
+        "restore",
+        "--source",
+        target,
+        "--patch",
+        "--staged",
+        "--worktree",
+        "--",
+    ];
+    args.push(file.unwrap_or("."));
+    mutation(dir, needs_sudo, &args, "INTERACTIVE PATCH RESTORATION")
+}
+
+/// Paths changed by a restore relative to HEAD and the selected flake directory.
+pub fn changed_paths(dir: &Path) -> Result<Vec<String>> {
+    let output = checked_output(
+        dir,
+        &["diff", "HEAD", "--name-only", "-z", "--relative", "--"],
+    )?;
+    nul_paths(&output.stdout)
+}
+
+/// Create the replacement before changing HEAD, including when trees are equal.
+/// A compare-and-swap rejects concurrent history updates without losing work.
+pub fn trim_history(dir: &Path, needs_sudo: bool, target: &str, message: &str) -> Result<()> {
+    ensure_clean(dir)?;
+    let old_head = head(dir)?;
+    let target_output = checked_output(
+        dir,
+        &["rev-parse", "--verify", &format!("{target}^{{commit}}")],
+    )?;
+    let target = String::from_utf8(target_output.stdout)?.trim().to_string();
+    if target == old_head {
+        bail!("Select a commit before HEAD to trim history");
     }
-
-    let mut cmd = make_cmd("git", dir, needs_sudo);
-    cmd.args(&args);
-
-    let prefix = if needs_sudo { "sudo " } else { "" };
-    let file_suffix = file.map(|f| format!(" -- {f}")).unwrap_or_default();
-    let status = run_visible(
-        "INTERACTIVE PATCH RESTORATION (LINES & HUNKS)",
-        &format!("{prefix}git checkout -p {target_ref}{file_suffix}"),
-        &mut cmd,
+    let ancestor =
+        run_silent(read_command(dir).args(["merge-base", "--is-ancestor", &target, &old_head]))?;
+    if !ancestor.status.success() {
+        bail!("The selected commit must be an ancestor of HEAD");
+    }
+    let tree_output = checked_output(dir, &["rev-parse", "HEAD^{tree}"])?;
+    let tree = String::from_utf8(tree_output.stdout)?.trim().to_string();
+    let mut command = make_cmd("git", dir, needs_sudo);
+    command.args(["commit-tree", &tree, "-p", &target, "-m", message]);
+    let signing =
+        run_silent(read_command(dir).args(["config", "--bool", "--get", "commit.gpgsign"]))?;
+    match signing.status.code() {
+        Some(0) if signing.stdout == b"true\n" => {
+            command.arg("-S");
+        }
+        Some(0 | 1) => {}
+        _ => {
+            check_output(&signing, "config")?;
+        }
+    }
+    let output = run_silent(&mut command)?;
+    check_output(&output, "commit-tree")?;
+    let new_head = String::from_utf8(output.stdout)?.trim().to_string();
+    mutation(
+        dir,
+        needs_sudo,
+        &[
+            "update-ref",
+            "-m",
+            "flaker: compact history",
+            "HEAD",
+            &new_head,
+            &old_head,
+        ],
+        "COMPACTING COMMIT HISTORY",
     )
-    .context("Failed to execute interactive git checkout -p")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git checkout -p exited with status: {status}");
-    }
 }

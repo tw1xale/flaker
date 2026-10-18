@@ -2,6 +2,7 @@
 name = "flaker"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
 description = "Interactive TUI manager for NixOS Flakes"
 repository = "https://github.com/tw1xale/flaker"
@@ -24,6 +25,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 unicode-width = "0.2"
+unicode-segmentation = "1.13"
+rnix = "0.14"
+rowan = "0.16"
 
 [profile.release]
 overflow-checks = true
