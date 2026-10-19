@@ -56,6 +56,7 @@ pub fn git_add(dir: &Path, needs_sudo: bool, path: &str) -> Result<()> {
 }
 
 /// Only diff exit 1 indicates a change; other failures must stop the workflow.
+#[cfg(test)]
 pub fn has_staged_changes(dir: &Path) -> Result<bool> {
     let output = run_silent(read_command(dir).args(["diff", "--cached", "--quiet"]))?;
     diff_status(&output)
@@ -66,6 +67,22 @@ pub fn has_uncommitted_changes(dir: &Path) -> Result<bool> {
     let output = checked_output(
         dir,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    Ok(!output.stdout.is_empty())
+}
+
+/// Check only a literal path, so unrelated edits cannot trigger a restore commit.
+pub fn path_has_changes(dir: &Path, path: &str) -> Result<bool> {
+    let output = checked_output(
+        dir,
+        &[
+            "--literal-pathspecs",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--",
+            path,
+        ],
     )?;
     Ok(!output.stdout.is_empty())
 }
@@ -98,14 +115,23 @@ pub fn ensure_path_clean(dir: &Path, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Commit all staged changes only when the user explicitly selected that scope.
-pub fn git_commit(dir: &Path, needs_sudo: bool, message: &str) -> Result<()> {
-    mutation(
-        dir,
-        needs_sudo,
-        &["commit", "-m", message],
-        "RECORDING GIT COMMIT",
-    )
+/// Stage and commit the selected scope, leaving unrelated index entries untouched.
+/// Return false only when this scope has no changes relative to HEAD.
+pub fn commit_changes(dir: &Path, needs_sudo: bool, message: &str, path: &str) -> Result<bool> {
+    git_add(dir, needs_sudo, path)?;
+    let output = run_silent(read_command(dir).args([
+        "--literal-pathspecs",
+        "diff",
+        "--cached",
+        "--quiet",
+        "--",
+        path,
+    ]))?;
+    if !diff_status(&output)? {
+        return Ok(false);
+    }
+    git_commit_paths(dir, needs_sudo, message, &[path.to_string()])?;
+    Ok(true)
 }
 
 /// Preserve unrelated staged and unstaged changes during a scoped commit.
@@ -174,8 +200,8 @@ pub fn get_recent_commits(dir: &Path) -> Result<Vec<String>> {
 }
 
 pub fn get_diff(dir: &Path) -> Result<String> {
-    let unstaged = checked_output(dir, &["diff", "--color=never"])?;
-    let staged = checked_output(dir, &["diff", "--cached", "--color=never"])?;
+    let unstaged = checked_output(dir, &["diff", "--color=never", "--", "."])?;
+    let staged = checked_output(dir, &["diff", "--cached", "--color=never", "--", "."])?;
     let mut combined = String::from_utf8(unstaged.stdout).context("Working diff is not UTF-8")?;
     if !combined.is_empty() && !staged.stdout.is_empty() {
         combined.push('\n');
@@ -206,7 +232,7 @@ pub fn git_checkout_files(dir: &Path, needs_sudo: bool, hash: &str) -> Result<()
             "--staged",
             "--worktree",
             "--",
-            ":/",
+            ".",
         ],
         "RESTORING REPOSITORY SNAPSHOT",
     )
@@ -218,7 +244,17 @@ pub fn get_commit_diff(dir: &Path, hash: &str) -> Result<String> {
     }
     let output = checked_output(
         dir,
-        &["show", "--stat", "--patch", "--color=never", hash, "--"],
+        &[
+            "show",
+            "--stat",
+            "--patch",
+            "--diff-merges=first-parent",
+            "--relative",
+            "--color=never",
+            hash,
+            "--",
+            ".",
+        ],
     )?;
     String::from_utf8(output.stdout).context("Commit diff is not UTF-8")
 }
@@ -228,7 +264,20 @@ pub fn get_commit_files(dir: &Path, hash: &str) -> Result<Vec<String>> {
     if hash.is_empty() {
         bail!("A commit must be selected");
     }
-    let output = checked_output(dir, &["show", "--pretty=", "--name-only", "-z", hash, "--"])?;
+    let output = checked_output(
+        dir,
+        &[
+            "show",
+            "--pretty=",
+            "--name-only",
+            "--diff-merges=first-parent",
+            "--relative",
+            "-z",
+            hash,
+            "--",
+            ".",
+        ],
+    )?;
     nul_paths(&output.stdout)
 }
 
@@ -400,4 +449,130 @@ pub fn trim_history(dir: &Path, needs_sudo: bool, target: &str, message: &str) -
         ],
         "COMPACTING COMMIT HISTORY",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Repo(PathBuf);
+
+    impl Repo {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "flaker-git-audit-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let repo = Self(dir);
+            repo.git(&["init", "-b", "main"]);
+            repo.git(&["config", "user.name", "Flaker Test"]);
+            repo.git(&["config", "user.email", "test@example.invalid"]);
+            repo.git(&["config", "commit.gpgsign", "false"]);
+            repo.git(&["config", "core.hooksPath", "/dev/null"]);
+            repo
+        }
+
+        fn git(&self, args: &[&str]) -> String {
+            let output = Command::new("git")
+                .current_dir(&self.0)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        }
+
+        fn write(&self, path: &str, content: &str) {
+            let path = self.0.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+
+        fn commit(&self, message: &str) {
+            self.git(&["add", "-A"]);
+            self.git(&["commit", "-m", message]);
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn commit_files_are_relative_to_selected_flake_and_exclude_siblings() {
+        let repo = Repo::new();
+        repo.write("nixos/flake.nix", "{}");
+        repo.write("outside.txt", "keep");
+        repo.commit("initial");
+        assert_eq!(
+            get_commit_files(&repo.0.join("nixos"), "HEAD").unwrap(),
+            ["flake.nix"]
+        );
+    }
+
+    #[test]
+    fn file_names_remain_literal_even_with_newlines_and_pathspec_magic() {
+        let repo = Repo::new();
+        let name = "odd\n[abc]*.nix";
+        repo.write(name, "old");
+        repo.commit("initial");
+        repo.write(name, "new");
+        repo.commit("change");
+        assert_eq!(get_commit_files(&repo.0, "HEAD").unwrap(), [name]);
+        assert!(
+            get_file_diff_from_commit(&repo.0, "HEAD", name)
+                .unwrap()
+                .contains("-new")
+        );
+    }
+
+    #[test]
+    fn snapshot_restore_stays_inside_selected_flake() {
+        let repo = Repo::new();
+        repo.write("nixos/flake.nix", "old");
+        repo.write("outside.txt", "old");
+        repo.commit("initial");
+        repo.write("nixos/flake.nix", "new");
+        repo.write("outside.txt", "new");
+        repo.commit("change");
+        git_checkout_files(&repo.0.join("nixos"), false, "HEAD~1").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.0.join("outside.txt")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.0.join("nixos/flake.nix")).unwrap(),
+            "old"
+        );
+    }
+    #[test]
+    fn lockfile_commit_preserves_unrelated_staged_changes() {
+        let repo = Repo::new();
+        repo.write("flake.lock", "old");
+        repo.write("notes.txt", "old");
+        repo.commit("initial");
+        repo.write("notes.txt", "new");
+        repo.git(&["add", "notes.txt"]);
+        assert!(!commit_changes(&repo.0, false, "update", "flake.lock").unwrap());
+        repo.write("flake.lock", "new");
+        assert!(commit_changes(&repo.0, false, "update", "flake.lock").unwrap());
+        assert_eq!(repo.git(&["show", "HEAD:notes.txt"]), "old");
+        assert_eq!(
+            repo.git(&["diff", "--cached", "--name-only"]).trim(),
+            "notes.txt"
+        );
+        assert_eq!(repo.git(&["show", "HEAD:flake.lock"]), "new");
+    }
 }

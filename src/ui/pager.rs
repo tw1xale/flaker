@@ -18,8 +18,8 @@ pub fn render_pager(
     theme: &Theme,
 ) {
     let popup_area = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(2),
     };
@@ -40,13 +40,13 @@ pub fn render_pager(
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let chunks = Layout::vertical([
+    let [content_area, footer_area] = Layout::vertical([
         Constraint::Min(1),    // Text content
         Constraint::Length(1), // Footer / Navigation hint
     ])
-    .split(inner);
+    .areas(inner);
 
-    let visible_height = chunks[0].height as usize;
+    let visible_height = usize::from(content_area.height);
     let visible_lines: Vec<Line> = content_lines
         .iter()
         .skip(scroll_offset)
@@ -55,12 +55,12 @@ pub fn render_pager(
         .collect();
 
     let paragraph = Paragraph::new(visible_lines);
-    frame.render_widget(paragraph, chunks[0]);
+    frame.render_widget(paragraph, content_area);
 
     let footer_p = Paragraph::new(Line::from(vec![Span::styled(
         footer_hint,
         Style::default().fg(theme.faint_hint),
     )]))
     .alignment(Alignment::Right);
-    frame.render_widget(footer_p, chunks[1]);
+    frame.render_widget(footer_p, footer_area);
 }

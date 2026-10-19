@@ -232,7 +232,7 @@ impl Theme {
         // 1. In-memory custom palette
         if let Some(custom) = find_palette_in_config(clean, config) {
             let mut base_theme = if let Some(ref base_name) = custom.base {
-                Self::resolve_palette(base_name, config, depth + 1)
+                Self::resolve_palette(base_name, config, depth.saturating_add(1))
             } else {
                 Self::mocha()
             };
@@ -245,7 +245,7 @@ impl Theme {
             && let Some(file_palette) = load_palette_file(&file_path)
         {
             let mut base_theme = if let Some(ref base_name) = file_palette.base {
-                Self::resolve_palette(base_name, config, depth + 1)
+                Self::resolve_palette(base_name, config, depth.saturating_add(1))
             } else {
                 Self::mocha()
             };

@@ -26,14 +26,20 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let chunks = Layout::vertical([
+    let [
+        title_area,
+        summary_area,
+        search_area,
+        list_area,
+        actions_area,
+    ] = Layout::vertical([
         Constraint::Length(1), // Title
         Constraint::Length(1), // Summary badge line
         Constraint::Length(1), // Search / filter bar
         Constraint::Min(4),    // List of items
         Constraint::Length(1), // Actions & hint bar
     ])
-    .split(inner);
+    .areas(inner);
 
     // Title
     let title_text = if state.on_confirm_task.is_some() {
@@ -66,20 +72,20 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(title_p, chunks[0]);
+    frame.render_widget(title_p, title_area);
 
     // Summary statistics
-    let mut added = 0;
-    let mut removed = 0;
-    let mut updated = 0;
-    let mut rebuilt = 0;
+    let mut added: usize = 0;
+    let mut removed: usize = 0;
+    let mut updated: usize = 0;
+    let mut rebuilt: usize = 0;
 
     for item in &state.items {
         match item.kind {
-            DiffKind::Added => added += 1,
-            DiffKind::Removed => removed += 1,
-            DiffKind::Updated => updated += 1,
-            DiffKind::Rebuilt => rebuilt += 1,
+            DiffKind::Added => added = added.saturating_add(1),
+            DiffKind::Removed => removed = removed.saturating_add(1),
+            DiffKind::Updated => updated = updated.saturating_add(1),
+            DiffKind::Rebuilt => rebuilt = rebuilt.saturating_add(1),
         }
     }
 
@@ -117,32 +123,37 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     let summary_p = Paragraph::new(summary_line)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
-    frame.render_widget(summary_p, chunks[1]);
+    frame.render_widget(summary_p, summary_area);
 
     // Search / filter bar
     let query = state.search_input.value();
     let filter_count = state.filtered_indices.len();
     let total_count = state.items.len();
 
-    let count_detail = if filter_count > chunks[3].height as usize && chunks[3].height > 0 {
-        let max_visible = chunks[3].height as usize;
+    let count_detail = if filter_count > usize::from(list_area.height) && list_area.height > 0 {
+        let max_visible = usize::from(list_area.height);
         let max_scroll = filter_count.saturating_sub(max_visible);
         let actual_scroll = state.scroll_offset.min(max_scroll);
-        let first = actual_scroll + 1;
-        let last = (actual_scroll + max_visible).min(filter_count);
+        let first = actual_scroll.saturating_add(1);
+        let last = (actual_scroll.saturating_add(max_visible)).min(filter_count);
         format!("  ({filter_count} / {total_count} shown  •  {first}–{last} of {filter_count})")
     } else {
         format!("  ({filter_count} / {total_count} shown)")
     };
 
     let prefix_text = format!(" {} Filter: ", theme::ICON_SEARCH);
-    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix_text.as_str()) as u16;
-    let count_detail_w = unicode_width::UnicodeWidthStr::width(count_detail.as_str()) as u16;
+    let prefix_width = u16::try_from(unicode_width::UnicodeWidthStr::width(prefix_text.as_str()))
+        .unwrap_or(u16::MAX);
+    let count_detail_w =
+        u16::try_from(unicode_width::UnicodeWidthStr::width(count_detail.as_str()))
+            .unwrap_or(u16::MAX);
 
-    let input_max_w = (chunks[2]
-        .width
-        .saturating_sub(prefix_width)
-        .saturating_sub(count_detail_w)) as usize;
+    let input_max_w = usize::from(
+        search_area
+            .width
+            .saturating_sub(prefix_width)
+            .saturating_sub(count_detail_w),
+    );
     let input_max_w = input_max_w.max(1);
     let scroll = state.search_input.visual_scroll(input_max_w);
 
@@ -172,16 +183,16 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         Span::styled(count_detail, Style::default().fg(theme.faint_hint)),
     ]);
     let search_p = Paragraph::new(search_line);
-    frame.render_widget(search_p, chunks[2]);
+    frame.render_widget(search_p, search_area);
 
     let cursor_offset = u16::try_from(state.search_input.visual_cursor().saturating_sub(scroll))
         .unwrap_or(u16::MAX);
-    let cursor_x = chunks[2]
+    let cursor_x = search_area
         .x
         .saturating_add(prefix_width)
         .saturating_add(cursor_offset);
-    let cursor_y = chunks[2].y;
-    if cursor_x < chunks[2].right() {
+    let cursor_y = search_area.y;
+    if cursor_x < search_area.right() {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 
@@ -204,9 +215,9 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
         )]))
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
-        frame.render_widget(empty_p, chunks[3]);
+        frame.render_widget(empty_p, list_area);
     } else {
-        let max_visible = chunks[3].height as usize;
+        let max_visible = usize::from(list_area.height);
         let max_scroll = state.filtered_indices.len().saturating_sub(max_visible);
         let scroll_offset = state.scroll_offset.min(max_scroll);
 
@@ -309,7 +320,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
             .collect();
 
         let list = List::new(list_items);
-        frame.render_widget(list, chunks[3]);
+        frame.render_widget(list, list_area);
     }
 
     // Actions & hint footer
@@ -353,7 +364,7 @@ pub fn render_closure_diff(frame: &mut Frame, area: Rect, state: &ClosureDiffSta
     let hint_p = Paragraph::new(hint_line)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
-    frame.render_widget(hint_p, chunks[4]);
+    frame.render_widget(hint_p, actions_area);
 }
 
 #[cfg(test)]

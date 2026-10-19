@@ -42,14 +42,14 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let vertical_chunks = Layout::vertical([
+    let [title_area, subtitle_area, hint_area, _, main_area] = Layout::vertical([
         Constraint::Length(1), // Title
         Constraint::Length(1), // Subtitle
         Constraint::Length(1), // Hint
         Constraint::Length(1), // Spacer
         Constraint::Min(6),    // Main content area
     ])
-    .split(inner);
+    .areas(inner);
 
     // Title
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -60,7 +60,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(title_p, vertical_chunks[0]);
+    frame.render_widget(title_p, title_area);
 
     // Subtitle
     let subtitle_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -69,7 +69,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(subtitle_p, vertical_chunks[1]);
+    frame.render_widget(subtitle_p, subtitle_area);
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -78,39 +78,42 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(hint_p, vertical_chunks[2]);
-
-    let main_area = vertical_chunks[4];
+    frame.render_widget(hint_p, hint_area);
 
     let (left_pane, right_pane_opt) = if is_wide {
-        let panes = Layout::horizontal([
+        let [left, right] = Layout::horizontal([
             Constraint::Percentage(45), // Left: Commits list & search
             Constraint::Percentage(55), // Right: Commit preview pane
         ])
-        .split(main_area);
-        (panes[0], Some(panes[1]))
+        .areas(main_area);
+        (left, Some(right))
     } else {
         (main_area, None)
     };
 
     // --- Left Pane: Search bar & Commits list ---
-    let left_chunks = Layout::vertical([
+    let [search_outer, list_area] = Layout::vertical([
         Constraint::Length(3), // Search bar
         Constraint::Min(4),    // Commits list
     ])
-    .split(left_pane);
+    .areas(left_pane);
 
-    let search_area = Layout::horizontal([
+    let [_, search_area, _] = Layout::horizontal([
         Constraint::Length(1), // Left padding
         Constraint::Min(10),   // Search input box
         Constraint::Length(1), // Right padding
     ])
-    .split(left_chunks[0])[1];
+    .areas(search_outer);
 
     let prefix_text = format!(" {} Search: ", theme::ICON_SEARCH);
-    let prefix_width = unicode_width::UnicodeWidthStr::width(prefix_text.as_str()) as u16;
+    let prefix_width = u16::try_from(unicode_width::UnicodeWidthStr::width(prefix_text.as_str()))
+        .unwrap_or(u16::MAX);
 
-    let input_max_w = (search_area.width.saturating_sub(prefix_width + 3)) as usize;
+    let input_max_w = usize::from(
+        search_area
+            .width
+            .saturating_sub(prefix_width.saturating_add(3)),
+    );
     let scroll = params.input.visual_scroll(input_max_w);
 
     let search_line = Line::from(vec![
@@ -136,8 +139,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
     frame.render_widget(search_p, search_area);
 
     // Commits list
-    let list_area = left_chunks[1];
-    let max_visible = list_area.height as usize;
+    let max_visible = usize::from(list_area.height);
     let scroll_offset = if max_visible > 0 && params.selected_index >= max_visible {
         params
             .selected_index
@@ -147,7 +149,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
         0
     };
 
-    let max_col_width = list_area.width.saturating_sub(2) as usize;
+    let max_col_width = usize::from(list_area.width.saturating_sub(2));
 
     let list_items: Vec<ListItem> = if params.filtered_items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
@@ -162,21 +164,21 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
             .take(max_visible)
             .enumerate()
             .map(|(visible_idx, (commit_str, matches))| {
-                let actual_idx = visible_idx + scroll_offset;
+                let actual_idx = visible_idx.saturating_add(scroll_offset);
                 let is_selected = actual_idx == params.selected_index;
 
                 let mut spans = vec![Span::raw(" ")];
 
-                let mut current_width = 0;
-                let mut take_count = 0;
+                let mut current_width: usize = 0;
+                let mut take_count: usize = 0;
                 let limit = max_col_width.saturating_sub(1);
                 for ch in commit_str.chars() {
                     let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                    if current_width + w > limit {
+                    if current_width.saturating_add(w) > limit {
                         break;
                     }
-                    current_width += w;
-                    take_count += 1;
+                    current_width = current_width.saturating_add(w);
+                    take_count = take_count.saturating_add(1);
                 }
                 let truncated = take_count < commit_str.chars().count();
 
@@ -194,7 +196,7 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
                         Style::default().fg(theme.text)
                     };
 
-                    let display_str = if ch == '\t' || (ch as u32) < 32 {
+                    let display_str = if ch == '\t' || u32::from(ch) < 32 {
                         " ".to_string()
                     } else {
                         ch.to_string()
@@ -252,13 +254,13 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
         let preview_inner = preview_block.inner(right_pane);
         frame.render_widget(preview_block, right_pane);
 
-        let preview_chunks = Layout::vertical([
+        let [preview_area, preview_footer] = Layout::vertical([
             Constraint::Min(1),    // Diff lines
             Constraint::Length(1), // Footer scroll indicator
         ])
-        .split(preview_inner);
+        .areas(preview_inner);
 
-        let max_preview_lines = preview_chunks[0].height as usize;
+        let max_preview_lines = usize::from(preview_area.height);
         let visible_preview_lines: Vec<ListItem> = params
             .preview_lines
             .iter()
@@ -271,14 +273,15 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
             .collect();
 
         let preview_list = List::new(visible_preview_lines);
-        frame.render_widget(preview_list, preview_chunks[0]);
+        frame.render_widget(preview_list, preview_area);
 
         // Diff pane scroll position footer
         let scroll_footer = if total_lines > max_preview_lines {
-            let current_end = (params.preview_scroll + max_preview_lines).min(total_lines);
+            let current_end =
+                (params.preview_scroll.saturating_add(max_preview_lines)).min(total_lines);
             format!(
                 "Lines {}-{}/{} (Scroll: \u{2191}/\u{2193})",
-                params.preview_scroll + 1,
+                params.preview_scroll.saturating_add(1),
                 current_end,
                 total_lines
             )
@@ -293,6 +296,6 @@ pub fn render_filter(frame: &mut Frame, area: Rect, params: &FilterParams, theme
             Style::default().fg(theme.faint_hint),
         )]))
         .alignment(Alignment::Right);
-        frame.render_widget(scroll_footer_p, preview_chunks[1]);
+        frame.render_widget(scroll_footer_p, preview_footer);
     }
 }

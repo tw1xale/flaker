@@ -51,23 +51,23 @@ fn parse_hunk_header(line: &str) -> (usize, String) {
 pub fn expand_tabs(line: &str, tab_width: usize) -> String {
     if !line.contains('\t')
         && !line.contains('\r')
-        && !line.chars().any(|c| (c as u32) < 32 && c != '\n')
+        && !line.chars().any(|c| u32::from(c) < 32 && c != '\n')
     {
         return line.to_string();
     }
 
-    let tab_width = tab_width.max(1);
-    let mut result = String::with_capacity(line.len() + 16);
-    let mut col = 0;
+    let tab_width = std::num::NonZeroUsize::new(tab_width).unwrap_or(std::num::NonZeroUsize::MIN);
+    let mut result = String::with_capacity(line.len().saturating_add(16));
+    let mut col: usize = 0;
 
     for ch in line.chars() {
         match ch {
             '\t' => {
-                let spaces = tab_width - (col % tab_width);
+                let spaces = tab_width.get().saturating_sub(col % tab_width);
                 for _ in 0..spaces {
                     result.push(' ');
                 }
-                col += spaces;
+                col = col.saturating_add(spaces);
             }
             '\n' => {
                 result.push('\n');
@@ -76,14 +76,14 @@ pub fn expand_tabs(line: &str, tab_width: usize) -> String {
             '\r' => {
                 // Strip carriage returns
             }
-            c if (c as u32) < 32 => {
+            c if u32::from(c) < 32 => {
                 // Sanitize non-printable control characters that could disrupt terminal cursor
                 result.push(' ');
-                col += 1;
+                col = col.saturating_add(1);
             }
             c => {
                 result.push(c);
-                col += 1;
+                col = col.saturating_add(1);
             }
         }
     }
@@ -286,7 +286,9 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
             Span::styled(msg.to_string(), Style::default().fg(theme.text)),
         ])
     } else if let Some(label) = s.strip_prefix("§§divider:") {
-        let rule_len = 50usize.saturating_sub(label.chars().count() + 4).max(10);
+        let rule_len = 50usize
+            .saturating_sub(label.chars().count().saturating_add(4))
+            .max(10);
         let rule = "─".repeat(rule_len);
         Line::from(vec![
             Span::styled("── ", Style::default().fg(theme.border)),
@@ -300,7 +302,7 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
         ])
     } else if let Some(file_info) = s.strip_prefix("§§file:") {
         let file_len = unicode_width::UnicodeWidthStr::width(file_info);
-        let rule_len = 54_usize.saturating_sub(file_len + 6).max(8);
+        let rule_len = 54_usize.saturating_sub(file_len.saturating_add(6)).max(8);
         let rule = "─".repeat(rule_len);
         Line::from(vec![
             Span::styled("── ", Style::default().fg(theme.border)),
@@ -326,7 +328,7 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
             format!("Line {line_num_str}: {heading}")
         };
         let title_len = unicode_width::UnicodeWidthStr::width(line_title.as_str());
-        let rule_len = 54_usize.saturating_sub(title_len + 6).max(6);
+        let rule_len = 54_usize.saturating_sub(title_len.saturating_add(6)).max(6);
         let rule = "┄".repeat(rule_len);
         Line::from(vec![
             Span::styled("   ┄ ", Style::default().fg(theme.faint_hint)),
@@ -372,13 +374,12 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
             ),
         ])
     } else if s.contains('|') && (s.contains('+') || s.contains('-')) {
-        let parts: Vec<&str> = s.splitn(2, '|').collect();
-        if parts.len() == 2 {
+        if let Some((filename, changes)) = s.split_once('|') {
             let mut spans = vec![
-                Span::styled(parts[0].to_string(), Style::default().fg(theme.text)),
+                Span::styled(filename.to_string(), Style::default().fg(theme.text)),
                 Span::styled("|", Style::default().fg(theme.faint_hint)),
             ];
-            for ch in parts[1].chars() {
+            for ch in changes.chars() {
                 let style = match ch {
                     '+' => Style::default()
                         .fg(theme.success)

@@ -1,3 +1,4 @@
+// Visual coordinates, selection counts and scroll offsets clamp to their representable bounds.
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
@@ -9,7 +10,7 @@ use std::path::PathBuf;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::actions::{FlakeContext, detect_flake_context, git, nix};
+use crate::actions::{detect_flake_context, git, nix};
 use crate::config::{Config, load_config};
 use crate::theme::{self, Theme};
 use crate::ui::{
@@ -62,7 +63,7 @@ pub enum InputFlow {
     FullCycle,
     SoftRevert(String),
     TrimHistory(String),
-    RestoreFile(String, String),
+    RestoreFile(String, Vec<String>),
     SelectiveFullCycle(Vec<String>),
 }
 
@@ -72,7 +73,7 @@ pub enum PendingAction {
     HardResetExecute(String),
     TrimHistorySoftReset(String),
     RestoreFileExecute(String, String),
-    RestoreCommitAndSwitch(String, String),
+    RestoreCommitAndSwitch(String, Vec<String>),
     SelectiveUpdateLockfile(Vec<String>),
     SelectiveFullCycle(Vec<String>),
 }
@@ -218,7 +219,25 @@ pub enum ExternalTask {
     TrimHistoryCommitAndPush(String, String),
     RestoreFile(String, String),
     RestorePatch(String, Option<String>),
-    RestoreCommitAndSwitch(String, String, String),
+    RestoreCommitAndSwitch(String, Vec<String>, String),
+}
+
+impl ExternalTask {
+    pub fn return_screen(&self) -> SubMenuKind {
+        match self {
+            Self::SelectiveUpdateFlakeOnly(_)
+            | Self::SelectiveFullCycleSwitchOnly(_)
+            | Self::SelectiveFullCycleCommitAndSwitch(_, _) => SubMenuKind::SelectiveUpdate,
+            Self::CleanStore => SubMenuKind::Maintenance,
+            Self::SoftRevertCommitAndSwitch(_, _)
+            | Self::HardReset(_)
+            | Self::TrimHistoryCommitAndPush(_, _)
+            | Self::RestoreFile(_, _)
+            | Self::RestorePatch(_, _)
+            | Self::RestoreCommitAndSwitch(_, _, _) => SubMenuKind::GitHistory,
+            _ => SubMenuKind::Updates,
+        }
+    }
 }
 
 pub struct App {
@@ -238,27 +257,24 @@ pub struct App {
     pub pending_external_task: ExternalTask,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl App {
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         let host = whoami::fallible::hostname().unwrap_or_else(|_| "nixos".to_string());
         let user = whoami::fallible::username().unwrap_or_else(|_| "user".to_string());
         let generation = nix::get_system_generation();
         let config = load_config();
         let theme = Theme::from_config(&config);
-        let ctx = detect_flake_context(&config).unwrap_or_else(|_| FlakeContext {
-            flake_dir: std::path::PathBuf::from("/etc/nixos"),
-            flake_target: "/etc/nixos".to_string(),
-            is_git: false,
-            needs_sudo: true,
-        });
+        let ctx = detect_flake_context(&config)?;
+        if !crate::actions::is_remote_target(&ctx.flake_target)
+            && !ctx.flake_dir.join("flake.nix").is_file()
+        {
+            anyhow::bail!(
+                "No flake.nix in {}. Set FLAKER_DIR or FLAKER_TARGET to select a configuration.",
+                ctx.flake_dir.display()
+            );
+        }
 
-        Self {
+        Ok(Self {
             should_quit: false,
             screen: Screen::TopMenu,
             top_menu_index: 0,
@@ -273,16 +289,15 @@ impl App {
             config,
             theme,
             pending_external_task: ExternalTask::None,
-        }
+        })
     }
 
     pub fn refresh_metadata(&mut self) {
         self.generation = nix::get_system_generation();
-        if let Ok(ctx) = detect_flake_context(&self.config) {
-            self.flake_dir = ctx.flake_dir;
-            self.flake_target = ctx.flake_target;
-            self.is_git = ctx.is_git;
-            self.needs_sudo = ctx.needs_sudo;
+        // Keep the selected target stable even after restoring flake.nix from history.
+        if !crate::actions::is_remote_target(&self.flake_target) {
+            self.is_git = crate::actions::is_git_repo(&self.flake_dir);
+            self.needs_sudo = crate::actions::check_needs_sudo(&self.flake_dir);
         }
     }
 
@@ -292,18 +307,18 @@ impl App {
 
         match &self.screen {
             Screen::TopMenu => {
-                let chunks = Layout::vertical([
+                let [header_area, _, menu_area, _, hint_area] = Layout::vertical([
                     Constraint::Length(7), // Header box
                     Constraint::Length(1), // Spacer
                     Constraint::Length(6), // Menu items box (4 items + 2 borders)
                     Constraint::Length(1), // Spacer
                     Constraint::Length(1), // Centered navigation hint below
                 ])
-                .split(centered_rect(64, 16, area));
+                .areas(centered_rect(64, 16, area));
 
                 render_header(
                     frame,
-                    chunks[0],
+                    header_area,
                     &self.host,
                     &self.user,
                     &self.generation,
@@ -333,14 +348,14 @@ impl App {
                     show_numbers: self.config.keybindings.enable_quick_digits,
                     back_item_key: &self.config.keybindings.back_item_key,
                 };
-                render_menu(frame, chunks[2], &menu_params, &self.theme);
+                render_menu(frame, menu_area, &menu_params, &self.theme);
 
                 let hint = self.config.keybindings.menu_hint(items.len());
                 let hint_area = Rect {
                     x: area.x,
-                    y: chunks[4].y,
+                    y: hint_area.y,
                     width: area.width,
-                    height: chunks[4].height,
+                    height: hint_area.height,
                 };
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
@@ -403,15 +418,15 @@ impl App {
                 let menu_box_height = u16::try_from(items.len())
                     .unwrap_or(u16::MAX)
                     .saturating_add(2);
-                let total_height = menu_box_height + 2;
+                let total_height = menu_box_height.saturating_add(2);
                 let centered = centered_rect(64, total_height, area);
 
-                let chunks = Layout::vertical([
+                let [menu_area, _, hint_area] = Layout::vertical([
                     Constraint::Length(menu_box_height), // Menu box with solid rounded borders
                     Constraint::Length(1),               // Spacer
                     Constraint::Length(1),               // Centered navigation hint below
                 ])
-                .split(centered);
+                .areas(centered);
 
                 let menu_params = MenuParams {
                     header_title: title,
@@ -420,14 +435,14 @@ impl App {
                     show_numbers: self.config.keybindings.enable_quick_digits,
                     back_item_key: &self.config.keybindings.back_item_key,
                 };
-                render_menu(frame, chunks[0], &menu_params, &self.theme);
+                render_menu(frame, menu_area, &menu_params, &self.theme);
 
                 let hint = self.config.keybindings.menu_hint(items.len());
                 let hint_area = Rect {
                     x: area.x,
-                    y: chunks[2].y,
+                    y: hint_area.y,
                     width: area.width,
-                    height: chunks[2].height,
+                    height: hint_area.height,
                 };
                 let hint_p = Paragraph::new(hint)
                     .alignment(Alignment::Center)
@@ -522,7 +537,7 @@ impl App {
                 let hint = self
                     .config
                     .keybindings
-                    .pager_hint(state.scroll_offset + 1, state.lines.len());
+                    .pager_hint(state.scroll_offset.saturating_add(1), state.lines.len());
                 render_pager(
                     frame,
                     area,
@@ -583,11 +598,13 @@ impl App {
                         let popup_w = max_popup_w.min(term_width.saturating_sub(2));
                         let popup_x = term_width.saturating_sub(popup_w) / 2;
                         let inner_w = popup_w.saturating_sub(2);
-                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
+                        let split_x = popup_x
+                            .saturating_add(1)
+                            .saturating_add(inner_w.saturating_mul(45) / 100);
                         if is_wide && mouse.column >= split_x {
                             state.preview_scroll = state.preview_scroll.saturating_sub(1);
                         } else if state.selected_index > 0 {
-                            state.selected_index -= 1;
+                            state.selected_index = state.selected_index.saturating_sub(1);
                             should_update = true;
                         }
                     }
@@ -603,11 +620,13 @@ impl App {
                         let popup_w = max_popup_w.min(term_width.saturating_sub(2));
                         let popup_x = term_width.saturating_sub(popup_w) / 2;
                         let inner_w = popup_w.saturating_sub(2);
-                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
+                        let split_x = popup_x
+                            .saturating_add(1)
+                            .saturating_add(inner_w.saturating_mul(45) / 100);
                         if is_wide && mouse.column >= split_x {
                             state.preview_scroll = state.preview_scroll.saturating_sub(1);
                         } else if state.selected_index > 0 {
-                            state.selected_index -= 1;
+                            state.selected_index = state.selected_index.saturating_sub(1);
                             should_update = true;
                         }
                     }
@@ -631,10 +650,10 @@ impl App {
                     }
                 }
                 ScreenTag::TopMenu if self.top_menu_index > 0 => {
-                    self.top_menu_index -= 1;
+                    self.top_menu_index = self.top_menu_index.saturating_sub(1);
                 }
                 ScreenTag::SubMenu(_) if self.submenu_index > 0 => {
-                    self.submenu_index -= 1;
+                    self.submenu_index = self.submenu_index.saturating_sub(1);
                 }
                 _ => {}
             },
@@ -647,16 +666,18 @@ impl App {
                         let popup_w = max_popup_w.min(term_width.saturating_sub(2));
                         let popup_x = term_width.saturating_sub(popup_w) / 2;
                         let inner_w = popup_w.saturating_sub(2);
-                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
+                        let split_x = popup_x
+                            .saturating_add(1)
+                            .saturating_add(inner_w.saturating_mul(45) / 100);
                         if is_wide && mouse.column >= split_x {
                             let total = state.preview_lines.len();
-                            state.preview_scroll =
-                                (state.preview_scroll + 1).min(total.saturating_sub(1));
+                            state.preview_scroll = (state.preview_scroll.saturating_add(1))
+                                .min(total.saturating_sub(1));
                         } else {
                             let filtered = filter_commits(&state.commits, state.input.value());
                             let count = filtered.len();
-                            if count > 0 && state.selected_index + 1 < count {
-                                state.selected_index += 1;
+                            if count > 0 && state.selected_index.saturating_add(1) < count {
+                                state.selected_index = state.selected_index.saturating_add(1);
                                 should_update = true;
                             }
                         }
@@ -673,16 +694,18 @@ impl App {
                         let popup_w = max_popup_w.min(term_width.saturating_sub(2));
                         let popup_x = term_width.saturating_sub(popup_w) / 2;
                         let inner_w = popup_w.saturating_sub(2);
-                        let split_x = popup_x + 1 + (inner_w * 45 / 100);
+                        let split_x = popup_x
+                            .saturating_add(1)
+                            .saturating_add(inner_w.saturating_mul(45) / 100);
                         if is_wide && mouse.column >= split_x {
                             let total = state.preview_lines.len();
-                            state.preview_scroll =
-                                (state.preview_scroll + 1).min(total.saturating_sub(1));
+                            state.preview_scroll = (state.preview_scroll.saturating_add(1))
+                                .min(total.saturating_sub(1));
                         } else {
                             let filtered = filter_commits(&state.files, state.input.value());
                             let count = filtered.len();
-                            if count > 0 && state.selected_index + 1 < count {
-                                state.selected_index += 1;
+                            if count > 0 && state.selected_index.saturating_add(1) < count {
+                                state.selected_index = state.selected_index.saturating_add(1);
                                 should_update = true;
                             }
                         }
@@ -695,31 +718,31 @@ impl App {
                     if let Screen::Pager(ref mut state) = self.screen {
                         let total = state.lines.len();
                         state.scroll_offset =
-                            (state.scroll_offset + 1).min(total.saturating_sub(1));
+                            (state.scroll_offset.saturating_add(1)).min(total.saturating_sub(1));
                     }
                 }
                 ScreenTag::SelectiveUpdate => {
                     if let Screen::SelectiveUpdate(ref mut state) = self.screen
-                        && state.cursor + 1 < state.inputs.len()
+                        && state.cursor.saturating_add(1) < state.inputs.len()
                     {
-                        state.cursor += 1;
+                        state.cursor = state.cursor.saturating_add(1);
                     }
                 }
                 ScreenTag::ClosureDiff => {
                     if let Screen::ClosureDiff(ref mut state) = self.screen {
                         let max_scroll = state.filtered_indices.len().saturating_sub(1);
                         if state.scroll_offset < max_scroll {
-                            state.scroll_offset += 1;
+                            state.scroll_offset = state.scroll_offset.saturating_add(1);
                         }
                     }
                 }
-                ScreenTag::TopMenu if self.top_menu_index + 1 < 4 => {
-                    self.top_menu_index += 1;
+                ScreenTag::TopMenu if self.top_menu_index.saturating_add(1) < 4 => {
+                    self.top_menu_index = self.top_menu_index.saturating_add(1);
                 }
                 ScreenTag::SubMenu(kind)
-                    if self.submenu_index + 1 < self.submenu_item_count(kind) =>
+                    if self.submenu_index.saturating_add(1) < self.submenu_item_count(kind) =>
                 {
-                    self.submenu_index += 1;
+                    self.submenu_index = self.submenu_index.saturating_add(1);
                 }
                 _ => {}
             },
@@ -754,13 +777,13 @@ impl App {
 
         if self.config.keybindings.is_up(&key) {
             if self.top_menu_index > 0 {
-                self.top_menu_index -= 1;
+                self.top_menu_index = self.top_menu_index.saturating_sub(1);
             } else {
                 self.top_menu_index = 3;
             }
         } else if self.config.keybindings.is_down(&key) {
             if self.top_menu_index < 3 {
-                self.top_menu_index += 1;
+                self.top_menu_index = self.top_menu_index.saturating_add(1);
             } else {
                 self.top_menu_index = 0;
             }
@@ -829,13 +852,13 @@ impl App {
 
         if self.config.keybindings.is_up(&key) {
             if self.submenu_index > 0 {
-                self.submenu_index -= 1;
+                self.submenu_index = self.submenu_index.saturating_sub(1);
             } else {
-                self.submenu_index = count - 1;
+                self.submenu_index = count.saturating_sub(1);
             }
         } else if self.config.keybindings.is_down(&key) {
-            if self.submenu_index + 1 < count {
-                self.submenu_index += 1;
+            if self.submenu_index.saturating_add(1) < count {
+                self.submenu_index = self.submenu_index.saturating_add(1);
             } else {
                 self.submenu_index = 0;
             }
@@ -892,7 +915,18 @@ impl App {
 
     fn start_rebuild_system(&mut self) {
         if self.is_git {
-            let has_changes = git::has_uncommitted_changes(&self.flake_dir).unwrap_or(false);
+            let has_changes = match git::has_uncommitted_changes(&self.flake_dir) {
+                Ok(changes) => changes,
+                Err(error) => {
+                    self.screen = Screen::Result(ResultState {
+                        is_success: false,
+                        title: "GIT STATUS FAILED".to_string(),
+                        message: format!("{error:#}"),
+                        return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
+                    });
+                    return;
+                }
+            };
 
             if has_changes {
                 let default_text = self.config.commit_templates.rebuild.clone();
@@ -996,7 +1030,7 @@ impl App {
         if is_down {
             let max_scroll = state.filtered_indices.len().saturating_sub(1);
             if state.scroll_offset < max_scroll {
-                state.scroll_offset += 1;
+                state.scroll_offset = state.scroll_offset.saturating_add(1);
             }
             return;
         }
@@ -1008,7 +1042,7 @@ impl App {
 
         if key.code == KeyCode::PageDown {
             let max_scroll = state.filtered_indices.len().saturating_sub(1);
-            state.scroll_offset = (state.scroll_offset + 10).min(max_scroll);
+            state.scroll_offset = (state.scroll_offset.saturating_add(10)).min(max_scroll);
             return;
         }
 
@@ -1271,7 +1305,7 @@ impl App {
                 || key.code == KeyCode::Char('h')
                 || key.code == KeyCode::Char('l')
             {
-                state.selected_button = 1 - state.selected_button;
+                state.selected_button = usize::from(state.selected_button == 0);
                 return;
             } else if self.config.keybindings.is_back(&key) {
                 if let Some(cancel_screen) = state.on_cancel_screen.take() {
@@ -1330,10 +1364,10 @@ impl App {
                     .config
                     .commit_templates
                     .restore_file
-                    .replace("{file}", &file)
+                    .replace("{file}", &file.join(", "))
                     .replace("{hash}", &hash);
                 self.screen = Screen::InputModal(InputModalState {
-                    action_name: format!("Restore {file} from {hash}"),
+                    action_name: format!("Restore {} from {hash}", file.join(", ")),
                     default_text,
                     input: Input::default(),
                     flow: InputFlow::RestoreFile(hash, file),
@@ -1457,14 +1491,14 @@ impl App {
 
                 if self.config.keybindings.is_up(&key) {
                     if state.cursor > 0 {
-                        state.cursor -= 1;
+                        state.cursor = state.cursor.saturating_sub(1);
                     } else {
                         state.cursor = state.inputs.len().saturating_sub(1);
                     }
                     return;
                 } else if self.config.keybindings.is_down(&key) {
-                    if state.cursor + 1 < state.inputs.len() {
-                        state.cursor += 1;
+                    if state.cursor.saturating_add(1) < state.inputs.len() {
+                        state.cursor = state.cursor.saturating_add(1);
                     } else {
                         state.cursor = 0;
                     }
@@ -1473,8 +1507,8 @@ impl App {
                     if let Some(val) = state.selected.get_mut(state.cursor) {
                         *val = !*val;
                     }
-                    if state.cursor + 1 < state.inputs.len() {
-                        state.cursor += 1;
+                    if state.cursor.saturating_add(1) < state.inputs.len() {
+                        state.cursor = state.cursor.saturating_add(1);
                     }
                     return;
                 } else if key.code == KeyCode::Char('a') {
@@ -1545,8 +1579,13 @@ impl App {
         } else {
             format!(
                 "{}, and {} more",
-                selected_inputs[..3].join(", "),
-                count - 3
+                selected_inputs
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                count.saturating_sub(3)
             )
         };
 
@@ -1574,8 +1613,7 @@ impl App {
     pub fn update_commit_preview(&mut self) {
         if let Screen::CommitFilter(ref mut state) = self.screen {
             let filtered = filter_commits(&state.commits, state.input.value());
-            let current_hash = if !filtered.is_empty() && state.selected_index < filtered.len() {
-                let (ref commit_str, _) = filtered[state.selected_index];
+            let current_hash = if let Some((commit_str, _)) = filtered.get(state.selected_index) {
                 commit_str
                     .split([' ', '│'])
                     .next()
@@ -1625,14 +1663,14 @@ impl App {
                     return;
                 } else if key.code == KeyCode::Up {
                     if state.selected_index > 0 {
-                        state.selected_index -= 1;
+                        state.selected_index = state.selected_index.saturating_sub(1);
                     } else if count > 0 {
-                        state.selected_index = count - 1;
+                        state.selected_index = count.saturating_sub(1);
                     }
                     (None, count)
                 } else if key.code == KeyCode::Down {
-                    if count > 0 && state.selected_index + 1 < count {
-                        state.selected_index += 1;
+                    if count > 0 && state.selected_index.saturating_add(1) < count {
+                        state.selected_index = state.selected_index.saturating_add(1);
                     } else {
                         state.selected_index = 0;
                     }
@@ -1642,7 +1680,8 @@ impl App {
                     (None, count)
                 } else if self.config.keybindings.is_page_down(&key) {
                     let total = state.preview_lines.len();
-                    state.preview_scroll = (state.preview_scroll + 10).min(total.saturating_sub(1));
+                    state.preview_scroll =
+                        (state.preview_scroll.saturating_add(10)).min(total.saturating_sub(1));
                     (None, count)
                 } else if self.config.keybindings.is_select(&key) {
                     if count == 0 {
@@ -1795,8 +1834,7 @@ impl App {
     pub fn update_file_preview(&mut self) {
         if let Screen::FileFilter(ref mut state) = self.screen {
             let filtered = filter_commits(&state.files, state.input.value());
-            let current_file = if !filtered.is_empty() && state.selected_index < filtered.len() {
-                let (ref file_str, _) = filtered[state.selected_index];
+            let current_file = if let Some((file_str, _)) = filtered.get(state.selected_index) {
                 file_str.clone()
             } else {
                 String::new()
@@ -1806,7 +1844,7 @@ impl App {
                 state.preview_file = current_file.clone();
                 state.preview_scroll = 0;
                 if !current_file.is_empty() {
-                    if current_file.contains("All files in commit") {
+                    if state.files.first() == Some(&current_file) {
                         match git::get_commit_diff(&self.flake_dir, &state.commit_hash) {
                             Ok(diff) => {
                                 state.preview_lines = prettify_diff(&diff);
@@ -1856,14 +1894,14 @@ impl App {
                     return;
                 } else if key.code == KeyCode::Up {
                     if state.selected_index > 0 {
-                        state.selected_index -= 1;
+                        state.selected_index = state.selected_index.saturating_sub(1);
                     } else if count > 0 {
-                        state.selected_index = count - 1;
+                        state.selected_index = count.saturating_sub(1);
                     }
                     (None, count)
                 } else if key.code == KeyCode::Down {
-                    if count > 0 && state.selected_index + 1 < count {
-                        state.selected_index += 1;
+                    if count > 0 && state.selected_index.saturating_add(1) < count {
+                        state.selected_index = state.selected_index.saturating_add(1);
                     } else {
                         state.selected_index = 0;
                     }
@@ -1873,7 +1911,8 @@ impl App {
                     (None, count)
                 } else if self.config.keybindings.is_page_down(&key) {
                     let total = state.preview_lines.len();
-                    state.preview_scroll = (state.preview_scroll + 10).min(total.saturating_sub(1));
+                    state.preview_scroll =
+                        (state.preview_scroll.saturating_add(10)).min(total.saturating_sub(1));
                     (None, count)
                 } else if key.modifiers.contains(KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('p')
@@ -1881,7 +1920,7 @@ impl App {
                     if count > 0
                         && let Some((file_str, _)) = filtered.get(state.selected_index)
                     {
-                        let file_opt = if file_str.contains("All files in commit") {
+                        let file_opt = if state.files.first() == Some(file_str) {
                             None
                         } else {
                             Some(file_str.clone())
@@ -1894,7 +1933,7 @@ impl App {
                     if count == 0 {
                         (None, 0)
                     } else if let Some((file_str, _)) = filtered.get(state.selected_index) {
-                        if file_str.contains("All files in commit") {
+                        if state.files.first() == Some(file_str) {
                             (Some((state.commit_hash.clone(), None, true)), count)
                         } else {
                             (
@@ -1982,16 +2021,17 @@ impl App {
             let total = state.lines.len();
             if self.config.keybindings.is_up(&key) {
                 if state.scroll_offset > 0 {
-                    state.scroll_offset -= 1;
+                    state.scroll_offset = state.scroll_offset.saturating_sub(1);
                 }
             } else if self.config.keybindings.is_down(&key) {
-                if state.scroll_offset + 1 < total {
-                    state.scroll_offset += 1;
+                if state.scroll_offset.saturating_add(1) < total {
+                    state.scroll_offset = state.scroll_offset.saturating_add(1);
                 }
             } else if self.config.keybindings.is_page_up(&key) {
                 state.scroll_offset = state.scroll_offset.saturating_sub(10);
             } else if self.config.keybindings.is_page_down(&key) {
-                state.scroll_offset = (state.scroll_offset + 10).min(total.saturating_sub(1));
+                state.scroll_offset =
+                    (state.scroll_offset.saturating_add(10)).min(total.saturating_sub(1));
             } else if self.config.keybindings.is_home(&key) {
                 state.scroll_offset = 0;
             } else if self.config.keybindings.is_end(&key) {
@@ -2044,9 +2084,12 @@ pub fn filter_commits(commits: &[String], query: &str) -> Vec<(String, Vec<usize
         let mut matched_indices = Vec::new();
 
         for (c_idx, c) in commit.chars().enumerate() {
-            if q_idx < query_lower.len() && c.to_lowercase().any(|lc| lc == query_lower[q_idx]) {
+            if query_lower
+                .get(q_idx)
+                .is_some_and(|query| c.to_lowercase().any(|lc| lc == *query))
+            {
                 matched_indices.push(c_idx);
-                q_idx += 1;
+                q_idx = q_idx.saturating_add(1);
             }
         }
 
@@ -2110,7 +2153,7 @@ mod tests {
 
     #[test]
     fn test_app_initial_state() {
-        let app = App::new();
+        let app = App::new().unwrap();
         assert_eq!(app.top_menu_index, 0);
         assert_eq!(app.submenu_index, 0);
         assert!(!app.should_quit);
@@ -2119,7 +2162,7 @@ mod tests {
 
     #[test]
     fn test_input_modal_esc_cancels() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::InputModal(InputModalState {
             action_name: "Test action".to_string(),
             default_text: "default msg".to_string(),
@@ -2135,7 +2178,7 @@ mod tests {
 
     #[test]
     fn test_app_keybindings_custom() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.config.keybindings.enable_quick_digits = false;
         app.config.keybindings.down = vec!["s".to_string()];
         app.config.keybindings.up = vec!["w".to_string()];
@@ -2149,7 +2192,7 @@ mod tests {
 
     #[test]
     fn test_app_digit_quick_selection() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.config.keybindings.enable_quick_digits = true;
         app.config.keybindings.back_item_key = "q".to_string();
 
@@ -2179,7 +2222,7 @@ mod tests {
 
     #[test]
     fn test_commit_filter_preview_scroll() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::CommitFilter(CommitFilterState {
             header_title: "Test header".to_string(),
             flow: FilterFlow::HardReset,
@@ -2214,7 +2257,7 @@ mod tests {
 
     #[test]
     fn test_commit_filter_mouse_scroll_commits() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::CommitFilter(CommitFilterState {
             header_title: "Test header".to_string(),
             flow: FilterFlow::HardReset,
@@ -2276,7 +2319,7 @@ mod tests {
 
     #[test]
     fn test_commit_filter_mouse_scroll_preview() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::CommitFilter(CommitFilterState {
             header_title: "Test header".to_string(),
             flow: FilterFlow::HardReset,
@@ -2307,7 +2350,7 @@ mod tests {
 
     #[test]
     fn test_file_filter_navigation_and_selection() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::FileFilter(FileFilterState {
             commit_hash: "abcdef1".to_string(),
             files: vec![
@@ -2341,7 +2384,7 @@ mod tests {
 
     #[test]
     fn test_file_filter_patch_all_files() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::FileFilter(FileFilterState {
             commit_hash: "abcdef1".to_string(),
             files: vec![
@@ -2366,7 +2409,7 @@ mod tests {
 
     #[test]
     fn test_file_filter_ctrl_p_shortcut() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::FileFilter(FileFilterState {
             commit_hash: "abcdef1".to_string(),
             files: vec![
@@ -2391,7 +2434,7 @@ mod tests {
 
     #[test]
     fn test_file_filter_esc_returns() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::FileFilter(FileFilterState {
             commit_hash: "abcdef1".to_string(),
             files: vec!["configuration.nix".to_string()],
@@ -2417,7 +2460,7 @@ mod tests {
             return;
         }
 
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.screen = Screen::FileFilter(FileFilterState {
             commit_hash: "HEAD".to_string(),
             files: vec![
@@ -2445,7 +2488,7 @@ mod tests {
 
     #[test]
     fn test_selective_update_include_flow() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let inputs = vec![
             crate::actions::nix::FlakeInput {
                 name: "nixpkgs".to_string(),
@@ -2503,7 +2546,7 @@ mod tests {
 
     #[test]
     fn test_selective_update_exclude_flow() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.is_git = true;
         let inputs = vec![
             crate::actions::nix::FlakeInput {
@@ -2559,7 +2602,7 @@ mod tests {
 
     #[test]
     fn test_selective_update_non_git_full_cycle() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         app.is_git = false;
 
         app.screen = Screen::Confirm(ConfirmState {
@@ -2587,7 +2630,7 @@ mod tests {
 
     #[test]
     fn test_selective_update_hotkeys() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let inputs = vec![
             crate::actions::nix::FlakeInput {
                 name: "pkg1".to_string(),
@@ -2633,7 +2676,7 @@ mod tests {
 
     #[test]
     fn test_selective_update_space_advances_cursor() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let inputs = vec![
             crate::actions::nix::FlakeInput {
                 name: "pkg1".to_string(),
@@ -2681,7 +2724,7 @@ mod tests {
 
     #[test]
     fn test_closure_diff_navigation_and_cancel() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let items = vec![
             crate::actions::nix::ClosureDiffItem {
                 package: "firefox".to_string(),
@@ -2737,7 +2780,7 @@ mod tests {
 
     #[test]
     fn test_closure_diff_filter_and_clear() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let items = vec![
             crate::actions::nix::ClosureDiffItem {
                 package: "firefox".to_string(),
@@ -2793,7 +2836,7 @@ mod tests {
 
     #[test]
     fn test_closure_diff_confirm_triggers_task() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let items = vec![crate::actions::nix::ClosureDiffItem {
             package: "curl".to_string(),
             before_version: Some("8.10.0".to_string()),
@@ -2826,7 +2869,7 @@ mod tests {
 
     #[test]
     fn test_closure_diff_post_activation_exit() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let items = vec![crate::actions::nix::ClosureDiffItem {
             package: "curl".to_string(),
             before_version: Some("8.10.0".to_string()),
@@ -2855,7 +2898,7 @@ mod tests {
 
     #[test]
     fn test_closure_diff_search_with_j_and_k() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let items = vec![
             crate::actions::nix::ClosureDiffItem {
                 package: "jq".to_string(),
@@ -2912,7 +2955,7 @@ mod tests {
 
     #[test]
     fn test_trim_history_flow() {
-        let mut app = App::new();
+        let mut app = App::new().unwrap();
         let target_hash = "abcdef12".to_string();
         app.screen = Screen::InputModal(InputModalState {
             action_name: format!("Trim commit history to {target_hash}"),

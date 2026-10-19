@@ -1,3 +1,4 @@
+// Rendering clips widths, coordinates and counters to the terminal/collection bounds.
 pub mod closure_diff;
 pub mod confirm;
 pub mod diff;

@@ -43,14 +43,14 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let chunks = Layout::vertical([
+    let [title_area, body_area, _, buttons_area, hint_area] = Layout::vertical([
         Constraint::Length(2),          // Title
         Constraint::Min(content_lines), // Message lines
         Constraint::Length(1),          // Spacer
         Constraint::Length(2),          // Buttons
         Constraint::Length(1),          // Keybind hint
     ])
-    .split(inner);
+    .areas(inner);
 
     // Title
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -61,7 +61,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(title_p, chunks[0]);
+    frame.render_widget(title_p, title_area);
 
     // Body
     let text_lines: Vec<Line> = params
@@ -78,7 +78,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     let body_p = Paragraph::new(text_lines)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
-    frame.render_widget(body_p, chunks[1]);
+    frame.render_widget(body_p, body_area);
 
     // Buttons
     let aff_style = if params.selected_button == 0 {
@@ -106,7 +106,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     ]);
 
     let buttons_p = Paragraph::new(buttons_line).alignment(Alignment::Center);
-    frame.render_widget(buttons_p, chunks[3]);
+    frame.render_widget(buttons_p, buttons_area);
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -115,7 +115,7 @@ pub fn render_confirm(frame: &mut Frame, area: Rect, params: &ConfirmParams, the
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(hint_p, chunks[4]);
+    frame.render_widget(hint_p, hint_area);
 }
 
 #[cfg(test)]

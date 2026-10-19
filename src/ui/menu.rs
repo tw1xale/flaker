@@ -43,13 +43,16 @@ pub fn render_menu(frame: &mut Frame, area: Rect, params: &MenuParams, theme: &T
                     Style::default().fg(theme.secondary_info)
                 };
 
-                if i + 1 == total_items && !params.back_item_key.trim().is_empty() {
+                if i.saturating_add(1) == total_items && !params.back_item_key.trim().is_empty() {
                     spans.push(Span::styled(
                         format!("{}. ", params.back_item_key.trim()),
                         num_style,
                     ));
                 } else {
-                    spans.push(Span::styled(format!("{}. ", i + 1), num_style));
+                    spans.push(Span::styled(
+                        format!("{}. ", i.saturating_add(1)),
+                        num_style,
+                    ));
                 }
             }
 

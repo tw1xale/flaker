@@ -310,7 +310,7 @@ impl KeybindingsConfig {
             && let Some(digit) = c.to_digit(10)
             && digit >= 1
         {
-            return Some((digit - 1) as usize);
+            return "123456789".chars().position(|digit| digit == c);
         }
 
         None

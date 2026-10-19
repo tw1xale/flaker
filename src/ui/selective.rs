@@ -48,14 +48,14 @@ pub fn render_selective(
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let chunks = Layout::vertical([
+    let [title_area, subtitle_area, list_area, _, hint_area] = Layout::vertical([
         Constraint::Length(2), // Title
         Constraint::Length(1), // Subtitle
         Constraint::Min(4),    // Input list
         Constraint::Length(1), // Spacer
         Constraint::Length(1), // Hint bar
     ])
-    .split(inner);
+    .areas(inner);
 
     // Title
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -66,7 +66,7 @@ pub fn render_selective(
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(title_p, chunks[0]);
+    frame.render_widget(title_p, title_area);
 
     // Subtitle
     let subtitle = match state.mode {
@@ -79,10 +79,10 @@ pub fn render_selective(
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(subtitle_p, chunks[1]);
+    frame.render_widget(subtitle_p, subtitle_area);
 
     // Input list items
-    let max_visible = chunks[2].height as usize;
+    let max_visible = usize::from(list_area.height);
     let scroll_offset = if max_visible > 0 && state.cursor >= max_visible {
         state.cursor.saturating_sub(max_visible).saturating_add(1)
     } else {
@@ -147,7 +147,7 @@ pub fn render_selective(
         .collect();
 
     let list = List::new(list_items);
-    frame.render_widget(list, chunks[2]);
+    frame.render_widget(list, list_area);
 
     // Hint bar
     let hint_line = Line::from(vec![
@@ -195,7 +195,7 @@ pub fn render_selective(
         Span::styled(": Back", Style::default().fg(theme.faint_hint)),
     ]);
     let hint_p = Paragraph::new(hint_line).alignment(Alignment::Center);
-    frame.render_widget(hint_p, chunks[4]);
+    frame.render_widget(hint_p, hint_area);
 }
 
 #[cfg(test)]

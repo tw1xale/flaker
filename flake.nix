@@ -41,6 +41,8 @@
             pkgs.installShellFiles
           ];
 
+          nativeCheckInputs = [ pkgs.git ];
+
           postInstall = ''
             installManPage man/flaker.1
             installShellCompletion --cmd flaker \

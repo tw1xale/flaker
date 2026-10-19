@@ -70,17 +70,18 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let horizontal_margin = area.width.saturating_sub(width) / 2;
     let vertical_margin = area.height.saturating_sub(height) / 2;
 
-    let vertical = Layout::vertical([
+    let [_, middle, _] = Layout::vertical([
         Constraint::Length(vertical_margin),
         Constraint::Length(height),
         Constraint::Min(0),
     ])
-    .split(area);
+    .areas(area);
 
-    Layout::horizontal([
+    let [_, centered, _] = Layout::horizontal([
         Constraint::Length(horizontal_margin),
         Constraint::Length(width),
         Constraint::Min(0),
     ])
-    .split(vertical[1])[1]
+    .areas(middle);
+    centered
 }

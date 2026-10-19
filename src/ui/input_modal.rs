@@ -33,14 +33,14 @@ pub fn render_input_modal(
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let chunks = Layout::vertical([
+    let [title_area, action_area, hint_area, _, input_area] = Layout::vertical([
         Constraint::Length(1), // Title
         Constraint::Length(1), // Action description
         Constraint::Length(2), // Hint (can wrap)
         Constraint::Min(1),    // Spacer / dynamic breathing room
         Constraint::Length(3), // Input field
     ])
-    .split(inner);
+    .areas(inner);
 
     // Title
     let title_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -51,7 +51,7 @@ pub fn render_input_modal(
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(title_p, chunks[0]);
+    frame.render_widget(title_p, title_area);
 
     // Action name
     let action_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -60,7 +60,7 @@ pub fn render_input_modal(
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(action_p, chunks[1]);
+    frame.render_widget(action_p, action_area);
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -69,10 +69,10 @@ pub fn render_input_modal(
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(hint_p, chunks[2]);
+    frame.render_widget(hint_p, hint_area);
 
     // Input box
-    let max_input_width = (chunks[4].width.saturating_sub(3)) as usize;
+    let max_input_width = usize::from(input_area.width.saturating_sub(3));
     let scroll = input.visual_scroll(max_input_width);
 
     let display_text = if input.value().is_empty() {
@@ -90,22 +90,22 @@ pub fn render_input_modal(
         .border_style(Style::default().fg(theme.border));
 
     let input_p = Paragraph::new(input_line).block(input_block);
-    frame.render_widget(input_p, chunks[4]);
+    frame.render_widget(input_p, input_area);
 
     // Position cursor exactly based on input.visual_cursor() and scroll
-    let start_x = chunks[4].x.saturating_add(2); // block left border (1) + left margin space (1)
+    let start_x = input_area.x.saturating_add(2); // block left border (1) + left margin space (1)
     let cursor_offset =
         u16::try_from(input.visual_cursor().saturating_sub(scroll)).unwrap_or(u16::MAX);
     let cursor_x = start_x.saturating_add(cursor_offset);
-    let cursor_y = chunks[4].y.saturating_add(1);
+    let cursor_y = input_area.y.saturating_add(1);
     if cursor_x
-        < chunks[4]
+        < input_area
             .x
-            .saturating_add(chunks[4].width.saturating_sub(1))
+            .saturating_add(input_area.width.saturating_sub(1))
         && cursor_y
-            < chunks[4]
+            < input_area
                 .y
-                .saturating_add(chunks[4].height.saturating_sub(1))
+                .saturating_add(input_area.height.saturating_sub(1))
     {
         frame.set_cursor_position((cursor_x, cursor_y));
     }

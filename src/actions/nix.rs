@@ -69,7 +69,7 @@ fn strip_ansi(s: &str) -> String {
                 if next == '[' {
                     chars.next();
                     for c2 in chars.by_ref() {
-                        if (0x40..=0x7E).contains(&(c2 as u32)) {
+                        if (0x40..=0x7E).contains(&u32::from(c2)) {
                             break;
                         }
                     }
@@ -181,25 +181,6 @@ pub fn parse_diff_closures_output(output: &str) -> Vec<ClosureDiffItem> {
     items
 }
 
-/// Safely removes the `./result` symlink in `dir`, using sudo if unprivileged removal fails.
-pub fn clean_result_link(dir: &Path, needs_sudo: bool) {
-    let result_link = dir.join("result");
-    if let Ok(meta) = result_link.symlink_metadata()
-        && meta.file_type().is_symlink()
-    {
-        let removed = fs::remove_file(&result_link).is_ok();
-        if !removed && needs_sudo {
-            // Use -n (non-interactive) and silence stdio so sudo never blocks or corrupts the TUI
-            let mut cmd = Command::new("sudo");
-            cmd.args(["-n", "rm", "-f", "--", &result_link.to_string_lossy()])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            let _ = cmd.status();
-        }
-    }
-}
-
 /// Runs `nix store diff-closures` between two store paths (read-only, no sudo).
 pub fn diff_closures(before: &Path, after: &Path) -> Result<Vec<ClosureDiffItem>> {
     let mut cmd = Command::new("nix");
@@ -228,6 +209,11 @@ pub struct SystemClosureDiff {
     pub is_identical_closure: bool,
 }
 
+// Size display deliberately rounds integers to one decimal place, never for control flow.
+#[expect(
+    clippy::as_conversions,
+    reason = "rounding byte counts for display only"
+)]
 fn format_size_delta(bytes_diff: i64) -> Option<String> {
     if bytes_diff == 0 {
         return None;
@@ -258,7 +244,7 @@ pub fn find_rebuilt_system_packages(
     before: &Path,
     after: &Path,
     existing_items: &[ClosureDiffItem],
-) -> Vec<ClosureDiffItem> {
+) -> Result<Vec<ClosureDiffItem>> {
     let mut rebuilts = Vec::new();
     let mut seen_packages: std::collections::HashSet<String> = existing_items
         .iter()
@@ -269,11 +255,15 @@ pub fn find_rebuilt_system_packages(
         let dir_before = before.join("sw").join(sub);
         let dir_after = after.join("sw").join(sub);
 
-        let Ok(entries) = fs::read_dir(&dir_after) else {
-            continue;
+        // System profiles need not expose both bin and sbin.
+        let entries = match fs::read_dir(&dir_after) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("Cannot read system profile executables"),
         };
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.context("Cannot read system profile entry")?;
             let path_after = entry.path();
             let file_name = entry.file_name();
             let path_before = dir_before.join(&file_name);
@@ -282,34 +272,12 @@ pub fn find_rebuilt_system_packages(
                 continue;
             }
 
-            let Ok(target_before) = fs::read_link(&path_before) else {
-                continue;
-            };
-            let Ok(target_after) = fs::read_link(&path_after) else {
-                continue;
-            };
+            let target_before = fs::read_link(&path_before)?;
+            let target_after = fs::read_link(&path_after)?;
 
             if target_before != target_after {
-                let canon_before = fs::canonicalize(&path_before).unwrap_or_else(|_| {
-                    if target_before.is_relative() {
-                        path_before
-                            .parent()
-                            .unwrap_or(&dir_before)
-                            .join(&target_before)
-                    } else {
-                        target_before
-                    }
-                });
-                let canon_after = fs::canonicalize(&path_after).unwrap_or_else(|_| {
-                    if target_after.is_relative() {
-                        path_after
-                            .parent()
-                            .unwrap_or(&dir_after)
-                            .join(&target_after)
-                    } else {
-                        target_after
-                    }
-                });
+                let canon_before = fs::canonicalize(&path_before)?;
+                let canon_after = fs::canonicalize(&path_after)?;
 
                 if canon_before == canon_after {
                     continue;
@@ -334,20 +302,14 @@ pub fn find_rebuilt_system_packages(
                 let (pkg_name, version) = parse_pkg_name_and_version(pkg_name_ver);
 
                 if seen_packages.insert(pkg_name.to_lowercase()) {
-                    let size_delta = match (fs::metadata(&canon_before), fs::metadata(&canon_after))
-                    {
-                        (Ok(m1), Ok(m2)) => {
-                            let len1 = m1.len();
-                            let len2 = m2.len();
-                            let delta = if len2 >= len1 {
-                                i64::try_from(len2 - len1).unwrap_or(i64::MAX)
-                            } else {
-                                -i64::try_from(len1 - len2).unwrap_or(i64::MAX)
-                            };
-                            format_size_delta(delta)
-                        }
-                        _ => None,
-                    };
+                    let len1 = fs::metadata(&canon_before)?.len();
+                    let len2 = fs::metadata(&canon_after)?.len();
+                    let delta = i128::from(len2)
+                        .checked_sub(i128::from(len1))
+                        .context("Package size delta overflow")?;
+                    let size_delta = format_size_delta(
+                        i64::try_from(delta).context("Package size delta exceeds i64")?,
+                    );
 
                     let ver_str = version.as_deref().unwrap_or("rebuilt").to_string();
                     rebuilts.push(ClosureDiffItem {
@@ -363,7 +325,7 @@ pub fn find_rebuilt_system_packages(
         }
     }
 
-    rebuilts
+    Ok(rebuilts)
 }
 
 /// Computes closure diff between two system closures (or paths).
@@ -371,16 +333,10 @@ pub fn get_closure_diff_between(
     before_closure: &Path,
     after_closure: &Path,
 ) -> Result<SystemClosureDiff> {
-    if !before_closure.exists() || !after_closure.exists() {
-        return Ok(SystemClosureDiff {
-            items: Vec::new(),
-            is_identical_closure: false,
-        });
-    }
-
-    let is_identical_closure = fs::canonicalize(before_closure)
-        .and_then(|c| fs::canonicalize(after_closure).map(|n| c == n))
-        .unwrap_or(false);
+    let before_closure =
+        fs::canonicalize(before_closure).context("Cannot resolve previous closure")?;
+    let after_closure = fs::canonicalize(after_closure).context("Cannot resolve new closure")?;
+    let is_identical_closure = before_closure == after_closure;
 
     if is_identical_closure {
         return Ok(SystemClosureDiff {
@@ -389,8 +345,8 @@ pub fn get_closure_diff_between(
         });
     }
 
-    let mut items = diff_closures(before_closure, after_closure)?;
-    let rebuilts = find_rebuilt_system_packages(before_closure, after_closure, &items);
+    let mut items = diff_closures(&before_closure, &after_closure)?;
+    let rebuilts = find_rebuilt_system_packages(&before_closure, &after_closure, &items)?;
     items.extend(rebuilts);
 
     Ok(SystemClosureDiff {
@@ -402,12 +358,12 @@ pub fn get_closure_diff_between(
 /// Runs a test build of the NixOS configuration (builds without activating).
 pub fn nixos_rebuild_build(flake_target: &str, dir: &Path, needs_sudo: bool) -> Result<()> {
     let mut cmd = make_cmd("nixos-rebuild", dir, needs_sudo);
-    cmd.args(["build", "--flake", flake_target]);
+    cmd.args(["build", "--no-link", "--flake", flake_target]);
 
     let prefix = if needs_sudo { "sudo " } else { "" };
     let status = run_visible(
         "TEST BUILDING CONFIGURATION",
-        &format!("{prefix}nixos-rebuild build --flake {flake_target}"),
+        &format!("{prefix}nixos-rebuild build --no-link --flake {flake_target}"),
         &mut cmd,
     )
     .context("Failed to execute nixos-rebuild build")?;
@@ -524,10 +480,10 @@ pub fn get_flake_inputs(dir: &Path) -> Result<Vec<FlakeInput>> {
     // Fallback: parse flake.nix if flake.lock is missing or empty
     let flake_nix_path = dir.join("flake.nix");
     if flake_nix_path.exists() {
-        let content = fs::read_to_string(&flake_nix_path).unwrap_or_default();
-        if let Ok(mut names) = crate::actions::parse_nix_attribute_names(&content, "inputs")
-            && !names.is_empty()
-        {
+        let content =
+            fs::read_to_string(&flake_nix_path).context("Cannot read flake.nix inputs")?;
+        let mut names = crate::actions::parse_nix_attribute_names(&content, "inputs")?;
+        if !names.is_empty() {
             names.sort();
             return Ok(names
                 .into_iter()
@@ -638,9 +594,7 @@ mod tests {
     fn test_closure_diff_between_nonexistent() {
         let p1 = Path::new("/nonexistent/path/1");
         let p2 = Path::new("/nonexistent/path/2");
-        let diff = get_closure_diff_between(p1, p2).unwrap();
-        assert!(!diff.is_identical_closure);
-        assert!(diff.items.is_empty());
+        assert!(get_closure_diff_between(p1, p2).is_err());
     }
 
     #[test]
@@ -892,7 +846,7 @@ warning: some warning
         let _ = std::os::unix::fs::symlink(&store_flaker1, sw1_bin.join("flaker"));
         let _ = std::os::unix::fs::symlink(&store_flaker2, sw2_bin.join("flaker"));
 
-        let rebuilts = find_rebuilt_system_packages(&sys1, &sys2, &[]);
+        let rebuilts = find_rebuilt_system_packages(&sys1, &sys2, &[]).unwrap();
         let _ = fs::remove_dir_all(&base);
 
         assert_eq!(rebuilts.len(), 1);
@@ -900,24 +854,6 @@ warning: some warning
         assert_eq!(rebuilts[0].after_version, Some("0.2.0".to_string()));
         assert_eq!(rebuilts[0].kind, DiffKind::Rebuilt);
         assert_eq!(rebuilts[0].size_delta, Some("+7 B".to_string()));
-    }
-
-    #[test]
-    fn test_clean_result_link() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("flaker_test_result_link_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let link_target = temp_dir.join("target");
-        let _ = std::fs::write(&link_target, "test");
-        let link_path = temp_dir.join("result");
-        #[cfg(unix)]
-        let _ = std::os::unix::fs::symlink(&link_target, &link_path);
-
-        assert!(link_path.symlink_metadata().is_ok());
-        clean_result_link(&temp_dir, false);
-        assert!(link_path.symlink_metadata().is_err());
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

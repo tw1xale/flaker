@@ -77,8 +77,7 @@ pub fn fallback_parse_flake_configs(content: &str) -> Vec<String> {
             continue;
         }
 
-        if let Some(pos) = trimmed.find("nixosConfigurations.") {
-            let rest = &trimmed[pos + "nixosConfigurations.".len()..];
+        if let Some((_, rest)) = trimmed.split_once("nixosConfigurations.") {
             let name: String = if let Some(unquoted) = rest.strip_prefix('"') {
                 unquoted.chars().take_while(|c| *c != '"').collect()
             } else {
@@ -218,7 +217,9 @@ pub fn discover_flake_dir() -> Result<PathBuf> {
         .into_iter()
         .find(|dir| dir.join("flake.nix").is_file())
         .ok_or_else(|| {
-            anyhow::anyhow!("No flake.nix found. Pass --dir or --flake to select a configuration.")
+            anyhow::anyhow!(
+                "No flake.nix found. Set FLAKER_DIR or FLAKER_TARGET to select a configuration."
+            )
         })
 }
 
@@ -276,7 +277,9 @@ fn absolute_flake_dir(path: &str) -> Result<PathBuf> {
     } else {
         std::env::current_dir()?.join(expanded)
     };
-    Ok(absolute.canonicalize().unwrap_or(absolute))
+    absolute
+        .canonicalize()
+        .with_context(|| format!("Cannot access flake directory {}", absolute.display()))
 }
 
 pub fn detect_flake_context(config: &Config) -> Result<FlakeContext> {
@@ -451,7 +454,7 @@ pub fn print_action_header_cli_with_theme(
     println!(); // Preserve previous command output within a suspended batch.
 
     let term_width = crossterm::terminal::size()
-        .map(|(w, _)| w as usize)
+        .map(|(w, _)| usize::from(w))
         .unwrap_or(80);
 
     let title_w = unicode_width::UnicodeWidthStr::width(title);
@@ -459,24 +462,24 @@ pub fn print_action_header_cli_with_theme(
     let content_len = title_w.max(desc_w).max(58);
     let inner_width = content_len.min(term_width.saturating_sub(4)).max(40);
 
-    let border_line = "─".repeat(inner_width + 2);
+    let border_line = "─".repeat(inner_width.saturating_add(2));
 
     let format_line = |text: &str| -> String {
         let text_w = unicode_width::UnicodeWidthStr::width(text);
         if text_w > inner_width {
-            let mut acc = 0;
+            let mut acc: usize = 0;
             let mut truncated = String::new();
             let target = inner_width.saturating_sub(3);
             for ch in text.chars() {
                 let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if acc + cw > target {
+                if acc.saturating_add(cw) > target {
                     break;
                 }
                 truncated.push(ch);
-                acc += cw;
+                acc = acc.saturating_add(cw);
             }
             truncated.push_str("...");
-            let remaining = inner_width.saturating_sub(acc + 3);
+            let remaining = inner_width.saturating_sub(acc.saturating_add(3));
             format!("{truncated}{}", " ".repeat(remaining))
         } else {
             let padding = inner_width.saturating_sub(text_w);

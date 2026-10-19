@@ -8,20 +8,37 @@ impl TerminalGuard {
         enable_raw_mode()?;
         let mut out = stdout();
         if let Err(err) = execute!(out, EnterAlternateScreen, Hide, EnableMouseCapture) {
-            let _ = disable_raw_mode();
+            restore_terminal().context("Terminal setup failed and cleanup also failed")?;
             return Err(err.into());
         }
         Ok(Self { active: true })
     }
 }
 
+fn restore_terminal() -> Result<()> {
+    // Attempt both cleanup operations even if one fails.
+    let screen = execute!(stdout(), LeaveAlternateScreen, Show, DisableMouseCapture);
+    let raw = disable_raw_mode();
+    screen.context("Failed to restore the terminal screen")?;
+    raw.context("Failed to restore cooked input")?;
+    Ok(())
+}
+
+impl TerminalGuard {
+    fn restore(&mut self) -> Result<()> {
+        if self.active {
+            restore_terminal()?;
+            self.active = false;
+        }
+        Ok(())
+    }
+}
+
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        if self.active {
-            self.active = false;
-            let mut out = stdout();
-            let _ = execute!(out, LeaveAlternateScreen, Show, DisableMouseCapture);
-            let _ = disable_raw_mode();
+        // Destructors cannot return errors; the normal exit restores explicitly.
+        if let Err(error) = self.restore() {
+            eprintln!("Terminal cleanup failed: {error:#}");
         }
     }
 }
@@ -34,7 +51,7 @@ mod ui;
 
 use crate::actions::{git, nix};
 use crate::app::{App, ExternalTask, ResultState, Screen, SubMenuKind};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
@@ -43,57 +60,74 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::{self, stdout};
-use std::time::Duration;
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    Run,
+    Help,
+    Version,
+}
+
+fn cli_action(args: &[String]) -> Result<CliAction> {
+    match args {
+        [] => Ok(CliAction::Run),
+        [flag] if flag == "-h" || flag == "--help" => Ok(CliAction::Help),
+        [flag] if flag == "-V" || flag == "--version" => Ok(CliAction::Version),
+        _ => anyhow::bail!(
+            "Unsupported arguments: {}. Use --help for usage.",
+            args.join(" ")
+        ),
+    }
+}
 
 fn main() -> Result<()> {
-    // Handle simple CLI flags before entering raw mode
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
-        match args[1].as_str() {
-            "-h" | "--help" => {
-                println!("flaker {}", env!("CARGO_PKG_VERSION"));
-                println!("Interactive TUI manager for NixOS Flakes\n");
-                println!("USAGE:");
-                println!("    flaker [OPTIONS]\n");
-                println!("OPTIONS:");
-                println!("    -h, --help       Print help information");
-                println!("    -V, --version    Print version information");
-                return Ok(());
-            }
-            "-V" | "--version" => {
-                println!("flaker {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            _ => {}
+    // Validate every argument before loading config or touching terminal state.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match cli_action(&args)? {
+        CliAction::Help => {
+            println!(
+                "flaker {}\nInteractive TUI manager for NixOS Flakes\n",
+                env!("CARGO_PKG_VERSION")
+            );
+            println!("USAGE:\n    flaker [OPTIONS]\n");
+            println!(
+                "OPTIONS:\n    -h, --help       Print help information\n    -V, --version    Print version information\n"
+            );
+            println!(
+                "Set FLAKER_DIR to select a local flake directory, or FLAKER_TARGET for a flake target."
+            );
+            return Ok(());
         }
+        CliAction::Version => {
+            println!("flaker {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        CliAction::Run => {}
     }
 
     // Ensure terminal is restored on panic
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(stdout(), LeaveAlternateScreen, Show, DisableMouseCapture);
+        if let Err(error) = restore_terminal() {
+            eprintln!("Terminal cleanup after panic failed: {error:#}");
+        }
         default_hook(info);
     }));
 
     // Initialize application state before entering raw mode so startup warnings are visible
-    let mut app = App::new();
+    let mut app = App::new()?;
 
     // Setup terminal with RAII cleanup guard
-    let guard = TerminalGuard::new()?;
+    let mut guard = TerminalGuard::new()?;
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal before reporting any application error to stderr
-    drop(guard);
-
-    if let Err(err) = res {
-        eprintln!("Application error: {err}");
-    }
-
-    Ok(())
+    let cleanup = guard.restore();
+    res?;
+    cleanup
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
@@ -105,7 +139,17 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         // Check if there is an external task to execute in terminal mode
         if !matches!(app.pending_external_task, ExternalTask::None) {
             let task = std::mem::replace(&mut app.pending_external_task, ExternalTask::None);
-            let _ = execute_external_task(terminal, app, task);
+            let return_screen = task.return_screen();
+            let mut suspender = actions::TerminalSuspender::suspend()?;
+            if let Err(error) = execute_external_task(app, task) {
+                app.screen = Screen::Result(ResultState {
+                    is_success: false,
+                    title: "ACTION FAILED".to_string(),
+                    message: format!("{error:#}"),
+                    return_screen: Box::new(Screen::SubMenu(return_screen)),
+                });
+            }
+            suspender.resume()?;
             terminal.clear()?;
             continue;
         }
@@ -114,30 +158,54 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             app.render(frame);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.handle_key(key);
-                }
-                Event::Mouse(mouse) => {
-                    let term_width = terminal.size().map(|s| s.width).unwrap_or(80);
-                    app.handle_mouse(mouse, term_width);
-                }
-                _ => {}
+        // There are no animations or background jobs: redraw only after an event.
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                app.handle_key(key);
             }
+            Event::Mouse(mouse) => {
+                let term_width = terminal.size()?.width;
+                app.handle_mouse(mouse, term_width);
+            }
+            _ => {}
         }
     }
 }
 
-fn execute_external_task(
-    _terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-    task: ExternalTask,
-) -> Result<()> {
+fn execute_external_task(app: &mut App, task: ExternalTask) -> Result<()> {
     let flake_target = app.flake_target.clone();
     let flake_dir = app.flake_dir.clone();
     let is_git = app.is_git;
     let needs_sudo = app.needs_sudo;
+
+    if actions::is_remote_target(&flake_target)
+        && !matches!(
+            task,
+            ExternalTask::None
+                | ExternalTask::RebuildSwitchOnly
+                | ExternalTask::TestBuild
+                | ExternalTask::CleanStore
+        )
+    {
+        anyhow::bail!(
+            "This action changes a local flake. Select a checkout with FLAKER_DIR; the remote target was not modified."
+        );
+    }
+
+    if is_git
+        && matches!(
+            task,
+            ExternalTask::UpdateFlakeOnly
+                | ExternalTask::UpdateFlakeAndPush(_)
+                | ExternalTask::FullCycleSwitchOnly
+                | ExternalTask::FullCycleCommitAndSwitch(_)
+                | ExternalTask::SelectiveUpdateFlakeOnly(_)
+                | ExternalTask::SelectiveFullCycleSwitchOnly(_)
+                | ExternalTask::SelectiveFullCycleCommitAndSwitch(_, _)
+        )
+    {
+        git::ensure_path_clean(&flake_dir, "flake.lock")?;
+    }
 
     /// Try to push; returns an optional warning suffix for the result message.
     fn try_push(dir: &std::path::Path, needs_sudo: bool, force: bool) -> String {
@@ -149,37 +217,44 @@ fn execute_external_task(
 
     fn show_post_activation_closure_diff(
         app: &mut App,
-        before_system: Option<&std::path::Path>,
+        before_system: std::result::Result<&std::path::Path, &std::io::Error>,
         title_suffix: &str,
         return_screen: SubMenuKind,
         success_title: &str,
         success_message: &str,
     ) {
-        let after_system = std::fs::canonicalize("/run/current-system").ok();
-        let diff_result = match (before_system, after_system.as_deref()) {
-            (Some(before), Some(after)) => nix::get_closure_diff_between(before, after).ok(),
-            _ => None,
-        };
+        let diff_result = (|| -> Result<nix::SystemClosureDiff> {
+            let before = before_system
+                .map_err(|error| anyhow::anyhow!("Previous system profile: {error}"))?;
+            let after = std::fs::canonicalize("/run/current-system")
+                .context("Cannot resolve the active system profile")?;
+            nix::get_closure_diff_between(before, &after)
+        })();
 
-        if let Some(diff) = diff_result {
-            let filtered_indices = (0..diff.items.len()).collect();
-            app.screen = Screen::ClosureDiff(crate::app::ClosureDiffState {
-                items: diff.items,
-                filtered_indices,
-                search_input: tui_input::Input::default(),
-                scroll_offset: 0,
-                is_identical_closure: diff.is_identical_closure,
-                on_confirm_task: None,
-                return_screen: Box::new(Screen::SubMenu(return_screen)),
-                title_suffix: title_suffix.to_string(),
-            });
-        } else {
-            app.screen = Screen::Result(ResultState {
-                is_success: true,
-                title: success_title.to_string(),
-                message: success_message.to_string(),
-                return_screen: Box::new(Screen::SubMenu(return_screen)),
-            });
+        match diff_result {
+            Ok(diff) => {
+                let filtered_indices = (0..diff.items.len()).collect();
+                app.screen = Screen::ClosureDiff(crate::app::ClosureDiffState {
+                    items: diff.items,
+                    filtered_indices,
+                    search_input: tui_input::Input::default(),
+                    scroll_offset: 0,
+                    is_identical_closure: diff.is_identical_closure,
+                    on_confirm_task: None,
+                    return_screen: Box::new(Screen::SubMenu(return_screen)),
+                    title_suffix: title_suffix.to_string(),
+                });
+            }
+            Err(error) => {
+                app.screen = Screen::Result(ResultState {
+                    is_success: true,
+                    title: success_title.to_string(),
+                    message: format!(
+                        "{success_message}\nClosure comparison unavailable: {error:#}"
+                    ),
+                    return_screen: Box::new(Screen::SubMenu(return_screen)),
+                });
+            }
         }
     }
 
@@ -188,7 +263,7 @@ fn execute_external_task(
 
         // --- System Rebuild and Activation Actions ---
         ExternalTask::RebuildSwitchOnly => {
-            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            let before_system = std::fs::canonicalize("/run/current-system");
             match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Ok(()) => {
                     app.generation = nix::get_system_generation();
@@ -214,23 +289,12 @@ fn execute_external_task(
 
         ExternalTask::RebuildCommitAndSwitch(msg) => {
             let has_staged = if is_git {
-                git::git_add(&flake_dir, needs_sudo, ".").is_ok()
-                    && git::has_staged_changes(&flake_dir).unwrap_or(false)
+                git::commit_changes(&flake_dir, needs_sudo, &msg, ".")?
             } else {
                 false
             };
 
-            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT COMMIT FAILED".to_string(),
-                    message: "Failed to record git commit before activating".to_string(),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
-                });
-                return Ok(());
-            }
-
-            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            let before_system = std::fs::canonicalize("/run/current-system");
             match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Ok(()) => {
                     let push_warn = if is_git && has_staged {
@@ -285,7 +349,7 @@ fn execute_external_task(
                 });
             }
             Ok(()) => {
-                let before_system = std::fs::canonicalize("/run/current-system").ok();
+                let before_system = std::fs::canonicalize("/run/current-system");
                 match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                     Ok(()) => {
                         app.generation = nix::get_system_generation();
@@ -322,23 +386,12 @@ fn execute_external_task(
                 }
                 Ok(()) => {
                     let has_staged = if is_git {
-                        git::git_add(&flake_dir, needs_sudo, ".").is_ok()
-                            && git::has_staged_changes(&flake_dir).unwrap_or(false)
+                        git::commit_changes(&flake_dir, needs_sudo, &msg, ".")?
                     } else {
                         false
                     };
 
-                    if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
-                        app.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "GIT COMMIT FAILED".to_string(),
-                            message: "Failed to record git commit before activating".to_string(),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
-                        });
-                        return Ok(());
-                    }
-
-                    let before_system = std::fs::canonicalize("/run/current-system").ok();
+                    let before_system = std::fs::canonicalize("/run/current-system");
                     match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                         Ok(()) => {
                             let push_warn = if is_git && has_staged {
@@ -398,7 +451,7 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    let before_system = std::fs::canonicalize("/run/current-system").ok();
+                    let before_system = std::fs::canonicalize("/run/current-system");
                     match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                         Ok(()) => {
                             app.generation = nix::get_system_generation();
@@ -440,26 +493,10 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    let mut committed = false;
-                    if is_git {
-                        let _ = git::git_add(&flake_dir, needs_sudo, "flake.lock");
-                        if git::has_staged_changes(&flake_dir).unwrap_or(false) {
-                            if let Err(err) = git::git_commit(&flake_dir, needs_sudo, &msg) {
-                                app.screen = Screen::Result(ResultState {
-                                    is_success: false,
-                                    title: "GIT COMMIT FAILED".to_string(),
-                                    message: err.to_string(),
-                                    return_screen: Box::new(Screen::SubMenu(
-                                        SubMenuKind::SelectiveUpdate,
-                                    )),
-                                });
-                                return Ok(());
-                            }
-                            committed = true;
-                        }
-                    }
+                    let committed =
+                        is_git && git::commit_changes(&flake_dir, needs_sudo, &msg, "flake.lock")?;
 
-                    let before_system = std::fs::canonicalize("/run/current-system").ok();
+                    let before_system = std::fs::canonicalize("/run/current-system");
                     match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                         Ok(()) => {
                             let push_warn = if is_git && committed {
@@ -510,50 +547,19 @@ fn execute_external_task(
         }
 
         ExternalTask::SoftRevertCommitAndSwitch(hash, msg) => {
-            let r1 = git::git_checkout_files(&flake_dir, needs_sudo, &hash);
-            let r2 = if r1.is_ok() {
-                git::git_add(&flake_dir, needs_sudo, ".")
-            } else {
-                r1
-            };
-            if r2.is_ok() && !git::has_staged_changes(&flake_dir).unwrap_or(false) {
+            git::git_checkout_files(&flake_dir, needs_sudo, &hash)?;
+            let has_staged = git::commit_changes(&flake_dir, needs_sudo, &msg, ".")?;
+            if !has_staged {
                 app.screen = Screen::Result(ResultState {
                     is_success: true,
                     title: "NO CHANGES TO REVERT".to_string(),
-                    message: format!(
-                        "Working tree files are already identical to commit {hash}. No revert commit needed."
-                    ),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
-                return Ok(());
-            }
-            if let Err(err) = r2 {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "SOFT REVERT FAILED".to_string(),
-                    message: err.to_string(),
+                    message: format!("Files are already identical to commit {hash}."),
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                 });
                 return Ok(());
             }
 
-            let has_staged = if is_git {
-                git::has_staged_changes(&flake_dir).unwrap_or(false)
-            } else {
-                false
-            };
-
-            if has_staged && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT COMMIT FAILED".to_string(),
-                    message: "Failed to record soft revert commit".to_string(),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
-                return Ok(());
-            }
-
-            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            let before_system = std::fs::canonicalize("/run/current-system");
             match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Ok(()) => {
                     let push_warn = if is_git && has_staged {
@@ -596,46 +602,21 @@ fn execute_external_task(
             }
         }
 
-        ExternalTask::RestoreCommitAndSwitch(hash, file, msg) => {
-            let paths = if file.contains("all files") {
-                git::changed_paths(&flake_dir).unwrap_or_default()
-            } else {
-                vec![file.clone()]
-            };
-
-            let has_changes = if is_git {
-                !paths.is_empty() && git::has_uncommitted_changes(&flake_dir).unwrap_or(false)
-            } else {
-                false
-            };
-
-            if !has_changes {
+        ExternalTask::RestoreCommitAndSwitch(hash, paths, msg) => {
+            let file = paths.join(", ");
+            if !is_git || paths.is_empty() || !git::has_uncommitted_changes(&flake_dir)? {
                 app.screen = Screen::Result(ResultState {
                     is_success: true,
                     title: "NOTHING TO COMMIT".to_string(),
-                    message: "Working tree has no changes. No commit was created.".to_string(),
+                    message: "No restored changes to commit.".to_string(),
                     return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                 });
                 return Ok(());
             }
+            git::git_commit_paths(&flake_dir, needs_sudo, &msg, &paths)?;
+            let has_staged = true;
 
-            let has_staged = if is_git {
-                git::git_commit_paths(&flake_dir, needs_sudo, &msg, &paths).is_ok()
-            } else {
-                false
-            };
-
-            if is_git && !has_staged {
-                app.screen = Screen::Result(ResultState {
-                    is_success: false,
-                    title: "GIT COMMIT FAILED".to_string(),
-                    message: format!("Failed to record commit restoring {file} from {hash}"),
-                    return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
-                });
-                return Ok(());
-            }
-
-            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            let before_system = std::fs::canonicalize("/run/current-system");
             match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Ok(()) => {
                     let push_warn = if is_git && has_staged {
@@ -690,7 +671,7 @@ fn execute_external_task(
                 return Ok(());
             }
 
-            let before_system = std::fs::canonicalize("/run/current-system").ok();
+            let before_system = std::fs::canonicalize("/run/current-system");
             match nix::nixos_rebuild_switch(&flake_target, &flake_dir) {
                 Ok(()) => {
                     let push_warn = if is_git {
@@ -763,27 +744,13 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    let has_staged = if is_git {
-                        git::git_add(&flake_dir, needs_sudo, "flake.lock").is_ok()
-                            && git::has_staged_changes(&flake_dir).unwrap_or(false)
-                    } else {
-                        false
-                    };
-
-                    if is_git && !has_staged {
+                    let committed =
+                        is_git && git::commit_changes(&flake_dir, needs_sudo, &msg, "flake.lock")?;
+                    if is_git && !committed {
                         app.screen = Screen::Result(ResultState {
                             is_success: true,
                             title: "FLAKE LOCKFILE UP TO DATE".to_string(),
-                            message:
-                                "flake.lock is already up to date. No changes to commit or push."
-                                    .to_string(),
-                            return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
-                        });
-                    } else if is_git && git::git_commit(&flake_dir, needs_sudo, &msg).is_err() {
-                        app.screen = Screen::Result(ResultState {
-                            is_success: false,
-                            title: "GIT COMMIT FAILED".to_string(),
-                            message: "Failed to record git commit after flake update".to_string(),
+                            message: "No lockfile changes to commit or push.".to_string(),
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                         });
                     } else {
@@ -795,10 +762,8 @@ fn execute_external_task(
 
                         app.screen = Screen::Result(ResultState {
                             is_success: true,
-                            title: "FLAKE UPDATED AND PUSHED".to_string(),
-                            message: format!(
-                                "flake.lock committed and pushed successfully{push_warn}"
-                            ),
+                            title: "FLAKE LOCKFILE UPDATED".to_string(),
+                            message: format!("flake.lock updated and committed{push_warn}"),
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::Updates)),
                         });
                     }
@@ -841,7 +806,6 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    nix::clean_result_link(&flake_dir, needs_sudo);
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: "TEST BUILD SUCCESSFUL".to_string(),
@@ -910,7 +874,7 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    let has_changes = git::has_uncommitted_changes(&flake_dir).unwrap_or(false);
+                    let has_changes = git::path_has_changes(&flake_dir, &file)?;
                     if has_changes {
                         let cancel_screen = Box::new(Screen::Result(ResultState {
                             is_success: true,
@@ -932,7 +896,8 @@ fn execute_external_task(
                             selected_button: 1,
                             is_danger: false,
                             on_confirm: crate::app::PendingAction::RestoreCommitAndSwitch(
-                                hash, file,
+                                hash,
+                                vec![file],
                             ),
                             on_secondary: None,
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
@@ -964,9 +929,9 @@ fn execute_external_task(
                     });
                 }
                 Ok(()) => {
-                    let has_changes = git::has_uncommitted_changes(&flake_dir).unwrap_or(false);
-                    if has_changes {
-                        let target_name = file_opt.unwrap_or_else(|| "all files".to_string());
+                    let paths = git::changed_paths(&flake_dir)?;
+                    if !paths.is_empty() {
+                        let target_name = file_opt.as_deref().unwrap_or("all files");
                         let cancel_screen = Box::new(Screen::Result(ResultState {
                             is_success: true,
                             title: "PATCH KEPT IN WORKING TREE".to_string(),
@@ -987,8 +952,7 @@ fn execute_external_task(
                             selected_button: 1,
                             is_danger: false,
                             on_confirm: crate::app::PendingAction::RestoreCommitAndSwitch(
-                                hash,
-                                target_name,
+                                hash, paths,
                             ),
                             on_secondary: None,
                             return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
@@ -1091,7 +1055,12 @@ mod codex_audit {
     #[test]
     fn tilde_target_must_be_expanded_before_command_execution() {
         let mut config = config::Config::default();
-        config.general.flake_target = "~/dotfiles#host".to_string();
+        config.general.flake_target = "~/#host".to_string();
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        if !home.exists() {
+            assert!(actions::detect_flake_context(&config).is_err());
+            return;
+        }
         let context = actions::detect_flake_context(&config).unwrap();
         assert!(
             !context.flake_target.starts_with('~'),

@@ -25,8 +25,8 @@ pub fn render_result(
     };
 
     let popup_width = 68.min(area.width.saturating_sub(4));
-    let wrap_width = (popup_width as usize).saturating_sub(4).max(1);
-    let count_wrap = u16::try_from(message.len() / wrap_width).unwrap_or(u16::MAX);
+    let wrap_width = (usize::from(popup_width)).saturating_sub(4).max(1);
+    let count_wrap = u16::try_from(message.len().div_ceil(wrap_width)).unwrap_or(u16::MAX);
     let count_lines = u16::try_from(message.lines().count()).unwrap_or(u16::MAX);
     let msg_lines = count_wrap.max(1).saturating_add(count_lines);
     let popup_height = msg_lines
@@ -45,12 +45,12 @@ pub fn render_result(
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let chunks = Layout::vertical([
+    let [title_area, message_area, hint_area] = Layout::vertical([
         Constraint::Length(2), // Title
         Constraint::Min(2),    // Message
         Constraint::Length(1), // Return hint
     ])
-    .split(inner);
+    .areas(inner);
 
     // Title
     let title_icon = if is_success {
@@ -67,16 +67,14 @@ pub fn render_result(
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(title_p, chunks[0]);
+    frame.render_widget(title_p, title_area);
 
     // Message
-    let msg_p = Paragraph::new(Line::from(vec![Span::styled(
-        message,
-        Style::default().fg(theme.muted_text),
-    )]))
-    .alignment(Alignment::Center)
-    .wrap(Wrap { trim: true });
-    frame.render_widget(msg_p, chunks[1]);
+    let msg_p = Paragraph::new(message)
+        .style(Style::default().fg(theme.muted_text))
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
+    frame.render_widget(msg_p, message_area);
 
     // Hint
     let hint_p = Paragraph::new(Line::from(vec![Span::styled(
@@ -85,7 +83,7 @@ pub fn render_result(
     )]))
     .alignment(Alignment::Center)
     .wrap(Wrap { trim: true });
-    frame.render_widget(hint_p, chunks[2]);
+    frame.render_widget(hint_p, hint_area);
 }
 
 #[cfg(test)]
