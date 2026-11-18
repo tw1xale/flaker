@@ -162,16 +162,17 @@ pub fn has_remote(dir: &Path) -> Result<bool> {
 }
 
 /// Respect tracking, pushRemote and refspec settings instead of assuming origin.
-pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<()> {
+pub fn git_push(dir: &Path, needs_sudo: bool, force: bool) -> Result<bool> {
     if !has_remote(dir)? {
-        return Ok(());
+        return Ok(false);
     }
     let args = if force {
         vec!["push", "--force-with-lease"]
     } else {
         vec!["push"]
     };
-    mutation(dir, needs_sudo, &args, "PUSHING TO REMOTE REPOSITORY")
+    mutation(dir, needs_sudo, &args, "PUSHING TO REMOTE REPOSITORY")?;
+    Ok(true)
 }
 
 /// Bound synchronous history loading to keep filtering responsive.
@@ -270,6 +271,7 @@ pub fn get_commit_files(dir: &Path, hash: &str) -> Result<Vec<String>> {
             "show",
             "--pretty=",
             "--name-only",
+            "--no-renames",
             "--diff-merges=first-parent",
             "--relative",
             "-z",
@@ -395,7 +397,16 @@ pub fn git_restore_patch(
 pub fn changed_paths(dir: &Path) -> Result<Vec<String>> {
     let output = checked_output(
         dir,
-        &["diff", "HEAD", "--name-only", "-z", "--relative", "--"],
+        &[
+            "diff",
+            "HEAD",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            "--relative",
+            "--",
+            ".",
+        ],
     )?;
     nul_paths(&output.stdout)
 }
@@ -536,6 +547,25 @@ mod tests {
                 .unwrap()
                 .contains("-new")
         );
+    }
+
+    #[test]
+    fn restoring_a_rename_commits_both_paths() {
+        let repo = Repo::new();
+        repo.write("before", "contents");
+        repo.commit("initial");
+        repo.git(&["mv", "before", "after"]);
+        repo.commit("rename");
+        assert_eq!(
+            get_commit_files(&repo.0, "HEAD").unwrap(),
+            ["after", "before"]
+        );
+        git_checkout_files(&repo.0, false, "HEAD~1").unwrap();
+        let paths = changed_paths(&repo.0).unwrap();
+        assert_eq!(paths, ["after", "before"]);
+        git_commit_paths(&repo.0, false, "restore", &paths).unwrap();
+        assert!(repo.git(&["diff", "HEAD~2", "HEAD"]).is_empty());
+        assert!(!has_uncommitted_changes(&repo.0).unwrap());
     }
 
     #[test]

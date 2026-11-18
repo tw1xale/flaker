@@ -24,8 +24,8 @@ pub fn slice_by_column_width(text: &str, scroll_col: usize, max_col_width: usize
     let mut visible = String::with_capacity(text.len());
     let mut visible_width: usize = 0;
 
-    for ch in text.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+        let ch_width = unicode_width::UnicodeWidthStr::width(grapheme);
         let next_col = current_col.saturating_add(ch_width);
 
         if next_col <= scroll_col {
@@ -33,8 +33,16 @@ pub fn slice_by_column_width(text: &str, scroll_col: usize, max_col_width: usize
             continue;
         }
 
+        if current_col < scroll_col {
+            let remainder = next_col.saturating_sub(scroll_col).min(max_col_width);
+            visible.extend(std::iter::repeat_n(' ', remainder));
+            visible_width = remainder;
+            current_col = next_col;
+            continue;
+        }
+
         if visible_width.saturating_add(ch_width) <= max_col_width {
-            visible.push(ch);
+            visible.push_str(grapheme);
             visible_width = visible_width.saturating_add(ch_width);
         } else {
             break;
@@ -61,6 +69,8 @@ mod tests {
     #[test]
     fn test_slice_by_column_width_cjk() {
         // Each '界' has display width 2
+        assert_eq!(slice_by_column_width("界ab", 1, 3), " ab");
+        assert_eq!(slice_by_column_width("👩‍💻xy", 0, 3), "👩‍💻x");
         let text = "界".repeat(10);
         // max width 6 columns -> 3 characters
         assert_eq!(slice_by_column_width(&text, 0, 6), "界".repeat(3));

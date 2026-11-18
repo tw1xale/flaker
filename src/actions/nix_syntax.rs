@@ -36,11 +36,23 @@ pub fn attribute_names(content: &str, scope: &str) -> Result<Vec<String>> {
         bail!("Invalid Nix syntax: {:?}", parsed.errors());
     }
     let mut names = Vec::new();
-    for entry in parsed
-        .syntax()
-        .descendants()
-        .filter_map(ast::AttrpathValue::cast)
-    {
+    let root = parsed.syntax();
+    let entries: Vec<_> = if scope == "inputs" {
+        // Only the flake's own input declarations can be updated by name.
+        let mut expression = parsed.tree().expr();
+        while let Some(ast::Expr::Paren(paren)) = expression {
+            expression = paren.expr();
+        }
+        match expression {
+            Some(ast::Expr::AttrSet(set)) => set.attrpath_values().collect(),
+            _ => Vec::new(),
+        }
+    } else {
+        root.descendants()
+            .filter_map(ast::AttrpathValue::cast)
+            .collect()
+    };
+    for entry in entries {
         let Some(path) = entry.attrpath() else {
             continue;
         };
@@ -105,8 +117,7 @@ mod tests {
 
     #[test]
     fn inputs_only_collect_direct_children() {
-        let content =
-            r#"{ inputs = { nixpkgs.url = "x"; hm = { inputs.nixpkgs.follows = "nixpkgs"; }; }; }"#;
+        let content = r#"({ inputs = { nixpkgs.url = "x"; hm = { inputs.transitive.follows = "nixpkgs"; }; }; outputs = _: { inputs.fake = 1; }; })"#;
         assert_eq!(
             attribute_names(content, "inputs").unwrap(),
             ["nixpkgs", "hm"]

@@ -82,7 +82,14 @@ fn cli_action(args: &[String]) -> Result<CliAction> {
 
 fn main() -> Result<()> {
     // Validate every argument before loading config or touching terminal state.
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| {
+            arg.into_string().map_err(|_| {
+                anyhow::anyhow!("Arguments must be valid UTF-8. Use --help for usage.")
+            })
+        })
+        .collect::<Result<_>>()?;
     match cli_action(&args)? {
         CliAction::Help => {
             println!(
@@ -210,7 +217,7 @@ fn execute_external_task(app: &mut App, task: ExternalTask) -> Result<()> {
     /// Try to push; returns an optional warning suffix for the result message.
     fn try_push(dir: &std::path::Path, needs_sudo: bool, force: bool) -> String {
         match git::git_push(dir, needs_sudo, force) {
-            Ok(()) => String::new(),
+            Ok(_) => String::new(),
             Err(err) => format!("\n⚠ Git push failed: {err}"),
         }
     }
@@ -836,27 +843,26 @@ fn execute_external_task(app: &mut App, task: ExternalTask) -> Result<()> {
         },
 
         ExternalTask::TrimHistoryCommitAndPush(hash, msg) => {
-            let r1 = git::trim_history(&flake_dir, needs_sudo, &hash, &msg);
-            let r2 = if r1.is_ok() {
-                git::git_push(&flake_dir, needs_sudo, true)
-            } else {
-                r1
-            };
-
-            match r2 {
+            git::trim_history(&flake_dir, needs_sudo, &hash, &msg)?;
+            match git::git_push(&flake_dir, needs_sudo, true) {
                 Err(err) => {
                     app.screen = Screen::Result(ResultState {
                         is_success: false,
-                        title: "HISTORY COMPACT FAILED".to_string(),
-                        message: err.to_string(),
+                        title: "HISTORY COMPACTED LOCALLY".to_string(),
+                        message: format!("Git push failed: {err}"),
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                     });
                 }
-                Ok(()) => {
+                Ok(pushed) => {
+                    let destination = if pushed {
+                        "and force-pushed"
+                    } else {
+                        "locally (no remote configured)"
+                    };
                     app.screen = Screen::Result(ResultState {
                         is_success: true,
                         title: "HISTORY COMPACT SUCCESSFUL".to_string(),
-                        message: format!("Commits up to {hash} squashed and force-pushed"),
+                        message: format!("Commits up to {hash} squashed {destination}"),
                         return_screen: Box::new(Screen::SubMenu(SubMenuKind::GitHistory)),
                     });
                 }

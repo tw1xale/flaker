@@ -59,9 +59,17 @@ pub fn to_ansi_fg(color: Color) -> String {
         Color::Blue => "\x1b[34m".to_string(),
         Color::Magenta => "\x1b[35m".to_string(),
         Color::Cyan => "\x1b[36m".to_string(),
-        Color::White => "\x1b[37m".to_string(),
+        Color::Gray => "\x1b[37m".to_string(),
+        Color::DarkGray => "\x1b[90m".to_string(),
+        Color::LightRed => "\x1b[91m".to_string(),
+        Color::LightGreen => "\x1b[92m".to_string(),
+        Color::LightYellow => "\x1b[93m".to_string(),
+        Color::LightBlue => "\x1b[94m".to_string(),
+        Color::LightMagenta => "\x1b[95m".to_string(),
+        Color::LightCyan => "\x1b[96m".to_string(),
+        Color::White => "\x1b[97m".to_string(),
         Color::Black => "\x1b[30m".to_string(),
-        _ => "\x1b[39m".to_string(),
+        Color::Reset => "\x1b[39m".to_string(),
     }
 }
 
@@ -804,6 +812,7 @@ border = "#ff0000"
             to_ansi_fg(Color::Rgb(136, 192, 208)),
             "\x1b[38;2;136;192;208m"
         );
+        assert_eq!(to_ansi_fg(Color::DarkGray), "\x1b[90m");
         assert_eq!(to_ansi_fg(Color::Red), "\x1b[31m");
     }
 }

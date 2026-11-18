@@ -60,30 +60,30 @@ pub fn expand_tabs(line: &str, tab_width: usize) -> String {
     let mut result = String::with_capacity(line.len().saturating_add(16));
     let mut col: usize = 0;
 
-    for ch in line.chars() {
-        match ch {
-            '\t' => {
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(line, true) {
+        match grapheme {
+            "\t" => {
                 let spaces = tab_width.get().saturating_sub(col % tab_width);
                 for _ in 0..spaces {
                     result.push(' ');
                 }
                 col = col.saturating_add(spaces);
             }
-            '\n' => {
+            "\n" | "\r\n" => {
                 result.push('\n');
                 col = 0;
             }
-            '\r' => {
+            "\r" => {
                 // Strip carriage returns
             }
-            c if u32::from(c) < 32 => {
+            c if c.chars().any(|ch| u32::from(ch) < 32) => {
                 // Sanitize non-printable control characters that could disrupt terminal cursor
                 result.push(' ');
                 col = col.saturating_add(1);
             }
             c => {
-                result.push(c);
-                col = col.saturating_add(1);
+                result.push_str(c);
+                col = col.saturating_add(unicode_width::UnicodeWidthStr::width(c));
             }
         }
     }
@@ -202,8 +202,7 @@ pub fn prettify_diff(raw: &str) -> Vec<String> {
         } else if line.starts_with("similarity index") {
             file_status = " (renamed)".to_string();
         } else if line.starts_with("index ")
-            || line.starts_with("--- ")
-            || line.starts_with("+++ ")
+            || (!file_header_emitted && (line.starts_with("--- ") || line.starts_with("+++ ")))
             || line.starts_with("rename from")
             || line.starts_with("rename to")
         {
@@ -347,7 +346,7 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
                 .fg(theme.faint_hint)
                 .add_modifier(Modifier::ITALIC),
         ))
-    } else if s.starts_with('+') && !s.starts_with("+++") {
+    } else if s.starts_with('+') {
         Line::from(vec![
             Span::styled(
                 "+",
@@ -360,7 +359,7 @@ pub fn format_diff_line(raw: &str, theme: &Theme) -> Line<'static> {
                 Style::default().fg(theme.success),
             ),
         ])
-    } else if s.starts_with('-') && !s.starts_with("---") {
+    } else if s.starts_with('-') {
         Line::from(vec![
             Span::styled(
                 "-",
@@ -566,7 +565,18 @@ index 0000000..1234567
     }
 
     #[test]
+    fn hunk_content_can_resemble_file_headers() {
+        let raw = "diff --git a/example b/example\n--- a/example\n+++ b/example\n@@ -1 +1 @@\n--- removed\n+++ added";
+        assert_eq!(
+            prettify_diff(raw),
+            ["§§file:example", "§§hunk:1:", "--- removed", "+++ added"]
+        );
+    }
+
+    #[test]
     fn test_expand_tabs() {
+        assert_eq!(expand_tabs("界\thello", 4), "界  hello");
+        assert_eq!(expand_tabs("e\u{301}\thello", 4), "e\u{301}   hello");
         assert_eq!(expand_tabs("hello", 4), "hello");
         assert_eq!(expand_tabs("\thello", 4), "    hello");
         assert_eq!(expand_tabs("+\thello", 4), "+   hello");
